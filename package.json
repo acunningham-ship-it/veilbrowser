@@ -16,6 +16,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test tests/*.test.ts",
+    "prepare": "tsc -p tsconfig.json",
     "prepublishOnly": "bun run build"
   },
   "keywords": [
