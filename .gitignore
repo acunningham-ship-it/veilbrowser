@@ -1,7 +1,9 @@
 node_modules/
-dist/
 bun.lock
 *.log
+
+# dist/ is committed so `bun add github:...` works without a build step
+# (bun blocks postinstall scripts by default). Rebuilt fresh on npm publish.
 
 # Test/scratch artifacts
 examples/out/
@@ -18,3 +20,4 @@ veil-*/
 # internal planning, not public
 LAUNCH.md
 examples/demo-record.ts
+LAUNCH_POSTS.md
