@@ -1,0 +1,54 @@
+{
+  "name": "veilbrowser",
+  "version": "0.1.0",
+  "description": "Stealth browser automation for AI agents. Drives real Chrome over raw CDP—no Playwright, no Puppeteer, no WebDriver. Zero runtime dependencies. Passes bot.sannysoft.com 57/57; bypasses Cloudflare's JS challenge.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "selftest": "bun run examples/selftest.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test tests/*.test.ts",
+    "prepublishOnly": "bun run build"
+  },
+  "keywords": [
+    "browser",
+    "automation",
+    "stealth",
+    "cdp",
+    "chrome",
+    "agent",
+    "ai",
+    "anti-bot",
+    "anti-detect",
+    "mcp",
+    "cloudflare",
+    "scraping"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acunningham-ship-it/veilbrowser.git"
+  },
+  "homepage": "https://github.com/acunningham-ship-it/veilbrowser#readme",
+  "bugs": {
+    "url": "https://github.com/acunningham-ship-it/veilbrowser/issues"
+  },
+  "author": "Armani Cunningham <acunningham@crazeemedia.com>",
+  "engines": {
+    "node": ">=24.0.0",
+    "bun": ">=1.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "typescript": "^6.0.3"
+  }
+}

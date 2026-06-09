@@ -1,0 +1,90 @@
+/**
+ * The page-side stealth patch — minimal and SELF-GATING.
+ *
+ * Hard-won lesson: on a real, properly-launched Chrome, the "tells" stealth
+ * bundles fix don't exist. `--disable-blink-features=AutomationControlled`
+ * already yields `navigator.webdriver === false` (the correct *human* value —
+ * NOT `undefined`, which is itself anomalous). A real profile already has the
+ * `chrome` object, 5 plugins, and real `languages`. Blindly overriding those
+ * doesn't help — and the overrides themselves (a patched `permissions.query`,
+ * a faked `toString`) are the precise signatures deep fingerprinters score as
+ * "stealth detected".
+ *
+ * So every patch here is gated: it fires ONLY when the value is actually wrong
+ * (e.g. a stripped/headless environment leaked `webdriver === true` or 0 plugins).
+ * On a healthy real Chrome this injects a script that observably does nothing.
+ *
+ * The WebGL vendor override is the one opt-in (`maskWebgl`), used solely to hide
+ * SwiftShader on GPU-less hosts. With a real GPU it stays off — the authentic
+ * vendor is consistent with the rendered pixels, so masking would be a lie.
+ */
+export interface StealthOptions {
+  maskWebgl?: boolean;
+  webglVendor?: string;
+  webglRenderer?: string;
+}
+
+export function buildStealth(opts: StealthOptions = {}): string {
+  const maskWebgl = opts.maskWebgl ?? false;
+  const vendor = opts.webglVendor ?? "Google Inc. (Intel)";
+  const renderer = opts.webglRenderer ?? "ANGLE (Intel, Mesa Intel(R) UHD Graphics)";
+
+  // Only emitted for SwiftShader hosts. When present it also needs the toString
+  // mask so the getParameter override can't be read back as non-native.
+  const webglBlock = maskWebgl
+    ? String.raw`
+  try {
+    const proto = WebGLRenderingContext && WebGLRenderingContext.prototype;
+    if (proto) {
+      const getParameter = proto.getParameter;
+      proto.getParameter = function (p) {
+        if (p === 37445) return ${JSON.stringify(vendor)};
+        if (p === 37446) return ${JSON.stringify(renderer)};
+        return getParameter.apply(this, arguments);
+      };
+      const native = Function.prototype.toString;
+      const masked = proto.getParameter;
+      Function.prototype.toString = function () {
+        if (this === masked || this === Function.prototype.toString) return 'function () { [native code] }';
+        return native.call(this);
+      };
+    }
+  } catch (e) {}`
+    : "";
+
+  return String.raw`
+(() => {
+  if (window.__veil) return;
+  Object.defineProperty(window, '__veil', { value: true, enumerable: false });
+
+  const patchGetter = (obj, prop, value) => {
+    try { Object.defineProperty(obj, prop, { get: () => value, configurable: true, enumerable: true }); } catch (e) {}
+  };
+
+  // webdriver: fix ONLY if automation leaked it as true. Real Chrome's false is correct.
+  try { if (navigator.webdriver === true) patchGetter(Object.getPrototypeOf(navigator), 'webdriver', false); } catch (e) {}
+
+  // chrome object: add only if a stripped build is missing it.
+  if (!window.chrome) window.chrome = { runtime: {} };
+
+  // plugins: backfill only if empty (real desktop reports the PDF viewers).
+  try {
+    if (navigator.plugins && navigator.plugins.length === 0) {
+      patchGetter(Object.getPrototypeOf(navigator), 'plugins', [
+        { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      ]);
+    }
+  } catch (e) {}
+
+  // languages: backfill only if empty.
+  if (!navigator.languages || navigator.languages.length === 0) {
+    patchGetter(Object.getPrototypeOf(navigator), 'languages', ['en-US', 'en']);
+  }
+${webglBlock}
+})();
+`;
+}
+
+/** Default stealth source: self-gating, no WebGL masking (authentic GPU fingerprint). */
+export const STEALTH_SOURCE = buildStealth();

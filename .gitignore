@@ -1,0 +1,19 @@
+node_modules/
+dist/
+bun.lock
+*.log
+
+# Test/scratch artifacts
+examples/out/
+profiles/
+*.png
+.veil-*
+veil-*/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# internal planning, not public
+LAUNCH.md
