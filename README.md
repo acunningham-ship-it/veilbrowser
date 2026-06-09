@@ -2,6 +2,10 @@
 
 **A stealth automation runtime for AI agents. Drives real Chrome over raw CDP — no Playwright, no Puppeteer, no WebDriver, zero runtime dependencies.**
 
+![Veil passing bot.sannysoft.com and Cloudflare's challenge](assets/demo.gif)
+
+*Veil driving real Chrome: bot.sannysoft.com all-green, then straight through Cloudflare's JS challenge — no patches, no plugins.*
+
 To Instagram, Google, Reddit, Datadome, Akamai — Veil *is* Chrome. Same binary, same
 TLS, same JS engine, same canvas/WebGL/font fingerprint a human's browser has. We
 don't reimplement the browser (that's Chromium's 20-year, 1000-engineer job, and a
