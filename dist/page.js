@@ -28,6 +28,16 @@ export class Page {
         await this.send("Page.addScriptToEvaluateOnNewDocument", { source });
     }
     /**
+     * Inject cookies before navigating — e.g. a logged-in session transferred
+     * from another browser. Each cookie is a CDP CookieParam ({name, value,
+     * domain, path, secure, httpOnly, expires?, sameSite?}). Lets the browser
+     * ride an existing session instead of re-doing a bot-walled login.
+     */
+    async setCookies(cookies) {
+        await this.send("Network.enable");
+        await this.send("Network.setCookies", { cookies });
+    }
+    /**
      * Scrub the "HeadlessChrome" token from the UA and the matching client-hint
      * brands. headless=new leaks it in both navigator.userAgent AND the Sec-CH-UA
      * request headers; setUserAgentOverride with metadata fixes both at once. A
@@ -160,6 +170,19 @@ export class Page {
         await sleep(this.rng.range(40, 110)); // press dwell
         await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...common });
     }
+    /** Bring this page's target to the foreground — CDP Input only routes to the active target. */
+    async bringToFront() {
+        await this.send("Page.bringToFront");
+    }
+    /** Trusted click at absolute viewport coords (when you can't resolve a snapshot ref). */
+    async clickAt(x, y) {
+        await this.moveTo({ x, y });
+        await sleep(this.rng.range(30, 90));
+        const common = { x, y, button: "left", clickCount: 1 };
+        await this.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...common });
+        await sleep(this.rng.range(40, 110));
+        await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...common });
+    }
     /** Type text into the focused element with human cadence. */
     async type(text) {
         for (const ch of text) {
@@ -193,5 +216,68 @@ export class Page {
             await sleep(poll);
         }
         throw new Error(`waitFor timed out: ${expression}`);
+    }
+    /**
+     * Attach local files to a file `<input>` — even a hidden one — without an OS
+     * file picker. Uses CDP DOM.setFileInputFiles (the same primitive Playwright
+     * uses under the hood), which sets `input.files` and fires `change` directly.
+     * `selector` defaults to the first file input; pass a more specific one if the
+     * page has several. Paths must be absolute.
+     */
+    async uploadFile(paths, selector = 'input[type="file"]') {
+        const { root } = await this.send("DOM.getDocument", { depth: 0 });
+        const { nodeId } = await this.send("DOM.querySelector", {
+            nodeId: root.nodeId,
+            selector,
+        });
+        if (!nodeId)
+            throw new Error(`uploadFile: no element matching ${selector}`);
+        await this.send("DOM.setFileInputFiles", { files: paths, nodeId });
+    }
+    /**
+     * Attach files through a control that opens a file picker (e.g. an "Upload
+     * files" menu item) WITHOUT an OS dialog. Intercepts the chooser via CDP,
+     * clicks the trigger, then feeds the paths to the input it opened for. This is
+     * the path for SPAs (like Gemini) that create the `<input>` lazily on click.
+     * Paths must be absolute.
+     */
+    async uploadViaPicker(triggerRef, paths, opts = {}) {
+        await this.send("Page.setInterceptFileChooserDialog", { enabled: true });
+        try {
+            // Listen on any session — the chooser event can arrive without our page
+            // sessionId attached, which silently filtered it out before.
+            const chooser = this.cdp.once("Page.fileChooserOpened", {
+                timeout: opts.timeout ?? 15000,
+            });
+            await this.click(triggerRef);
+            const ev = await chooser;
+            await this.send("DOM.setFileInputFiles", { files: paths, backendNodeId: ev.backendNodeId });
+        }
+        finally {
+            await this.send("Page.setInterceptFileChooserDialog", { enabled: false });
+        }
+    }
+    /** Read the page's visible text (for scraping a model response, etc.). */
+    async innerText() {
+        return this.evaluate("document.body ? document.body.innerText : ''");
+    }
+    /** Press a single named key on the focused element (Enter, Tab, Escape, arrows...). */
+    async press(key) {
+        const KEYS = {
+            Enter: { code: "Enter", vk: 13, text: "\r" },
+            Tab: { code: "Tab", vk: 9 },
+            Escape: { code: "Escape", vk: 27 },
+            Backspace: { code: "Backspace", vk: 8 },
+            ArrowDown: { code: "ArrowDown", vk: 40 },
+            ArrowUp: { code: "ArrowUp", vk: 38 },
+        };
+        const k = KEYS[key];
+        if (!k)
+            throw new Error(`press: unsupported key ${key}`);
+        const base = { key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk };
+        await this.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base, ...(k.text ? { text: k.text } : {}) });
+        if (k.text)
+            await this.send("Input.dispatchKeyEvent", { type: "char", ...base, text: k.text });
+        await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
     }
 }

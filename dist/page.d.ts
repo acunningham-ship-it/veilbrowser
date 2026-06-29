@@ -35,6 +35,13 @@ export declare class Page {
         maskWebgl?: boolean;
     }): Promise<void>;
     /**
+     * Inject cookies before navigating — e.g. a logged-in session transferred
+     * from another browser. Each cookie is a CDP CookieParam ({name, value,
+     * domain, path, secure, httpOnly, expires?, sameSite?}). Lets the browser
+     * ride an existing session instead of re-doing a bot-walled login.
+     */
+    setCookies(cookies: Array<Record<string, any>>): Promise<void>;
+    /**
      * Scrub the "HeadlessChrome" token from the UA and the matching client-hint
      * brands. headless=new leaks it in both navigator.userAgent AND the Sec-CH-UA
      * request headers; setUserAgentOverride with metadata fixes both at once. A
@@ -56,6 +63,10 @@ export declare class Page {
     private moveTo;
     /** Click an element by its snapshot ref. */
     click(ref: number): Promise<void>;
+    /** Bring this page's target to the foreground — CDP Input only routes to the active target. */
+    bringToFront(): Promise<void>;
+    /** Trusted click at absolute viewport coords (when you can't resolve a snapshot ref). */
+    clickAt(x: number, y: number): Promise<void>;
     /** Type text into the focused element with human cadence. */
     type(text: string): Promise<void>;
     /** Click a field then type into it. */
@@ -69,4 +80,26 @@ export declare class Page {
         timeout?: number;
         poll?: number;
     }): Promise<void>;
+    /**
+     * Attach local files to a file `<input>` — even a hidden one — without an OS
+     * file picker. Uses CDP DOM.setFileInputFiles (the same primitive Playwright
+     * uses under the hood), which sets `input.files` and fires `change` directly.
+     * `selector` defaults to the first file input; pass a more specific one if the
+     * page has several. Paths must be absolute.
+     */
+    uploadFile(paths: string[], selector?: string): Promise<void>;
+    /**
+     * Attach files through a control that opens a file picker (e.g. an "Upload
+     * files" menu item) WITHOUT an OS dialog. Intercepts the chooser via CDP,
+     * clicks the trigger, then feeds the paths to the input it opened for. This is
+     * the path for SPAs (like Gemini) that create the `<input>` lazily on click.
+     * Paths must be absolute.
+     */
+    uploadViaPicker(triggerRef: number, paths: string[], opts?: {
+        timeout?: number;
+    }): Promise<void>;
+    /** Read the page's visible text (for scraping a model response, etc.). */
+    innerText(): Promise<string>;
+    /** Press a single named key on the focused element (Enter, Tab, Escape, arrows...). */
+    press(key: string): Promise<void>;
 }
