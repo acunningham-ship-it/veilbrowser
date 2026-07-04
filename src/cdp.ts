@@ -113,6 +113,17 @@ export class CDP {
     });
   }
 
+  /** Remove all handlers for a specific sessionId. Called on page close to prevent accumulation. */
+  clearHandlers(sessionId: string) {
+    // Remove all handlers keyed with this sessionId
+    const prefix = `${sessionId}:`;
+    for (const key of this.handlers.keys()) {
+      if (key.startsWith(prefix)) {
+        this.handlers.delete(key);
+      }
+    }
+  }
+
   close() {
     this.closed = true;
     try {

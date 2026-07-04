@@ -8,12 +8,15 @@ const INTERESTING = new Set([
 export class Page {
     cdp;
     sessionId;
+    targetId;
     rng = new Rng();
     mouse = { x: 100, y: 100 };
     refs = new Map();
-    constructor(cdp, sessionId) {
+    closed = false;
+    constructor(cdp, sessionId, targetId) {
         this.cdp = cdp;
         this.sessionId = sessionId;
+        this.targetId = targetId;
     }
     /** Enable the domains we use and arm stealth injection on every document. */
     async init(opts = {}) {
@@ -279,5 +282,24 @@ export class Page {
         if (k.text)
             await this.send("Input.dispatchKeyEvent", { type: "char", ...base, text: k.text });
         await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+    }
+    /** Close this page and detach its target from the browser. Idempotent. */
+    async close() {
+        if (this.closed)
+            return;
+        this.closed = true;
+        this.refs.clear();
+        if (this.targetId) {
+            try {
+                // Target.closeTarget closes the page/target and frees its resources.
+                // Send to browser context (no sessionId) since we're closing the target itself.
+                await this.cdp.send("Target.closeTarget", { targetId: this.targetId });
+            }
+            catch {
+                // Target already closed or doesn't exist; this is OK.
+            }
+        }
+        // Clean up any lingering event handlers for this session
+        this.cdp.clearHandlers(this.sessionId);
     }
 }

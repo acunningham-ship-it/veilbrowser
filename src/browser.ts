@@ -25,7 +25,7 @@ export class Browser {
       targetId,
       flatten: true,
     });
-    const page = new Page(this.cdp, sessionId);
+    const page = new Page(this.cdp, sessionId, targetId);
     await page.init({ maskWebgl: this.launch.maskWebgl });
     return page;
   }

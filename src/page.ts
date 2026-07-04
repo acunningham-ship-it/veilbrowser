@@ -37,8 +37,13 @@ export class Page {
   private rng = new Rng();
   private mouse: Point = { x: 100, y: 100 };
   private refs = new Map<number, { backendNodeId: number; center: Point }>();
+  private closed = false;
 
-  constructor(private cdp: CDP, public readonly sessionId: string) {}
+  constructor(
+    private cdp: CDP,
+    public readonly sessionId: string,
+    private targetId?: string,
+  ) {}
 
   /** Enable the domains we use and arm stealth injection on every document. */
   async init(opts: { maskWebgl?: boolean } = {}) {
@@ -312,5 +317,23 @@ export class Page {
     await this.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base, ...(k.text ? { text: k.text } : {}) });
     if (k.text) await this.send("Input.dispatchKeyEvent", { type: "char", ...base, text: k.text });
     await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  }
+
+  /** Close this page and detach its target from the browser. Idempotent. */
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.refs.clear();
+    if (this.targetId) {
+      try {
+        // Target.closeTarget closes the page/target and frees its resources.
+        // Send to browser context (no sessionId) since we're closing the target itself.
+        await this.cdp.send("Target.closeTarget", { targetId: this.targetId });
+      } catch {
+        // Target already closed or doesn't exist; this is OK.
+      }
+    }
+    // Clean up any lingering event handlers for this session
+    this.cdp.clearHandlers(this.sessionId);
   }
 }

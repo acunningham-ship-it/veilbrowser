@@ -26,10 +26,12 @@ export interface Snapshot {
 export declare class Page {
     private cdp;
     readonly sessionId: string;
+    private targetId?;
     private rng;
     private mouse;
     private refs;
-    constructor(cdp: CDP, sessionId: string);
+    private closed;
+    constructor(cdp: CDP, sessionId: string, targetId?: string | undefined);
     /** Enable the domains we use and arm stealth injection on every document. */
     init(opts?: {
         maskWebgl?: boolean;
@@ -102,4 +104,6 @@ export declare class Page {
     innerText(): Promise<string>;
     /** Press a single named key on the focused element (Enter, Tab, Escape, arrows...). */
     press(key: string): Promise<void>;
+    /** Close this page and detach its target from the browser. Idempotent. */
+    close(): Promise<void>;
 }

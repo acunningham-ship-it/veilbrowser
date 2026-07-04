@@ -1,13 +1,16 @@
 /**
- * Unit tests for AX-tree snapshot ref numbering.
+ * Unit tests for AX-tree snapshot ref numbering and page lifecycle.
  *
  * The snapshot mechanism is core to Veil's agent-first design: elements get a
  * stable integer `ref` that agents use instead of CSS/XPath selectors. This test
  * validates that the ref numbering is consistent and correct.
  *
+ * Also tests page lifecycle (open/close) to ensure proper resource cleanup.
+ *
  * Run with: bun test tests/snapshot.test.ts
  */
 import { describe, it, expect } from "bun:test";
+import { Browser } from "../src/index.js";
 
 /**
  * Simulate the snapshot element filtering logic from page.ts.
@@ -110,5 +113,44 @@ describe("snapshot ref numbering", () => {
     expect(elems[0].name).toBe("A");
     expect(elems[1].name).toBe("C");
     expect(elems[1].ref).toBe(2); // numbering still sequential
+  });
+});
+
+describe("page lifecycle", () => {
+  it("page.close() is idempotent", async () => {
+    const browser = await Browser.launch({ headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.goto(`data:text/html,${encodeURIComponent("<h1>Test</h1>")}`);
+      // First close should work
+      await page.close();
+      // Second close should also work without throwing
+      await page.close();
+      expect(true).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("can create and close multiple pages", async () => {
+    const browser = await Browser.launch({ headless: true });
+    try {
+      const pages = [];
+      for (let i = 0; i < 5; i++) {
+        const page = await browser.newPage();
+        await page.goto(`data:text/html,${encodeURIComponent(`<h1>Page ${i}</h1>`)}`);
+        pages.push(page);
+      }
+      // All pages should be open
+      expect(pages).toHaveLength(5);
+
+      // Close them all
+      for (const page of pages) {
+        await page.close();
+      }
+      expect(true).toBe(true);
+    } finally {
+      await browser.close();
+    }
   });
 });

@@ -32,6 +32,8 @@ export declare class CDP {
         predicate?: (p: any) => boolean;
         timeout?: number;
     }): Promise<any>;
+    /** Remove all handlers for a specific sessionId. Called on page close to prevent accumulation. */
+    clearHandlers(sessionId: string): void;
     close(): void;
 }
 export {};
