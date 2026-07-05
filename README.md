@@ -58,10 +58,10 @@ bun install
 bun run examples/selftest.ts   # launches real Chrome, runs the full chain
 ```
 
-**In your code:**
+**In your own project** — `bun add @achamm/veilbrowser` (or `npm install @achamm/veilbrowser`):
 
 ```ts
-import { Browser } from "veilbrowser";
+import { Browser } from "@achamm/veilbrowser";
 
 const browser = await Browser.launch({ headless: false });   // headful = stealthiest
 const page = await browser.newPage();
