@@ -18,6 +18,17 @@ export interface LaunchOptions {
         width: number;
         height: number;
     };
+    /**
+     * Virtual-display (Xvfb) resolution — the `screen.*` a page sees. Defaults to a
+     * realistic desktop 1920x1080 so the Chrome window sits INSIDE the screen. A
+     * virtual display sized to the window (screen === window, window taller than
+     * screen) is a classic headless tell; a real monitor is bigger than the window.
+     * Only applies to veil's own auto-Xvfb, not an external DISPLAY.
+     */
+    screenSize?: {
+        width: number;
+        height: number;
+    };
     proxy?: string;
     /**
      * WebGL backend:

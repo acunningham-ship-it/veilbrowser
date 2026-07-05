@@ -153,14 +153,17 @@ suite, reproducible with `bun run examples/scrapingcourse.ts` (residential IP, h
 | Antibot Challenge | **Bypassed** — "You bypassed the Antibot challenge" (~3s auto-solve) |
 | Cloudflare JS Challenge | **Bypassed** — "You bypassed the Cloudflare challenge" |
 | Cloudflare Antibot + login | **Bypassed** — cleared the wall, rendered the real login form |
-| Cloudflare **Turnstile** + login | Page loads; the **interactive** Turnstile widget is **not** auto-solved |
+| Cloudflare **Turnstile** + login | **Passed** — managed Turnstile issues its token to real Chrome (a 700+ char `cf-turnstile-response`); the form submits. We don't *solve* a captcha — the real browser *earns* the token |
 | Demo suite — JS rendering, infinite scroll, pagination, table parsing, load-more, CSRF/login | all served clean |
 | Reddit — incl. its JS challenge | served clean (challenge auto-solved) |
 | Instagram — public profile | served clean |
 
-**11/12 cleared.** The one that doesn't is interactive Turnstile — which is exactly the
-line below. Honest gaps we do **not** yet claim: interactive Turnstile/reCAPTCHA, enterprise
-DataDome/Kasada, high-volume behavioural trust on logged-in sessions. We test before we claim.
+**12/12 cleared** on a clean residential IP. Two honest caveats, not hidden:
+Cloudflare's JS *interstitial* difficulty scales with **IP reputation** — hammer one IP
+and it escalates (that's IP rep, not a browser tell; use proxies at volume). And what we
+do **not** yet claim: an **interactive checkbox** reCAPTCHA/Turnstile that demands a human
+click, enterprise DataDome/Kasada, and high-volume behavioural trust on logged-in sessions.
+We test before we claim.
 
 **What moved the needle (each verified by re-running the suite):**
 1. **Real GPU, not SwiftShader.** `--use-gl=angle --use-angle=gl-egl` drives the actual

@@ -81,6 +81,21 @@ export function buildStealth(opts: StealthOptions = {}): string {
   if (!navigator.languages || navigator.languages.length === 0) {
     patchGetter(Object.getPrototypeOf(navigator), 'languages', ['en-US', 'en']);
   }
+
+  // deviceMemory: the spec caps this at 8. Some Linux builds leak the raw host
+  // RAM (e.g. 32) — an impossible value no real Chrome reports. Clamp ONLY when
+  // it exceeds the spec max.
+  try { if (navigator.deviceMemory > 8) patchGetter(Object.getPrototypeOf(navigator), 'deviceMemory', 8); } catch (e) {}
+
+  // Taskbar inset: a bare virtual display (Xvfb, no window manager) reports
+  // screen.availHeight === screen.height — no desktop furniture, a server tell.
+  // A real desktop reserves ~48px for a taskbar/dock. Patch ONLY when avail
+  // fills the whole screen (the anomaly); leave a real WM's values untouched.
+  try {
+    if (screen.availWidth === screen.width && screen.availHeight === screen.height) {
+      patchGetter(screen, 'availHeight', screen.height - 48);
+    }
+  } catch (e) {}
 ${webglBlock}
 })();
 `;

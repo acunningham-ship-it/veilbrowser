@@ -80,12 +80,22 @@ export async function launchChrome(opts = {}) {
     rmSync(join(userDataDir, "SingletonLock"), { force: true });
     rmSync(join(userDataDir, "SingletonCookie"), { force: true });
     rmSync(join(userDataDir, "SingletonSocket"), { force: true });
-    const { width, height } = opts.windowSize ?? { width: 1280, height: 800 };
+    // The screen (virtual display) is a realistic desktop; the window sits INSIDE it
+    // and is never larger than it, positioned like a real user's window so that
+    // screen.* > window.outer.*, availHeight leaves room for a taskbar, and
+    // screenX/screenY are non-zero — none of the "display sized to the window" tells.
+    const screen = opts.screenSize ?? { width: 1920, height: 1080 };
+    const win = opts.windowSize ?? { width: 1280, height: 800 };
+    const width = Math.min(win.width, screen.width);
+    const height = Math.min(win.height, screen.height);
+    const posX = Math.max(0, (screen.width - width) >> 1);
+    const posY = Math.max(0, (screen.height - height) >> 1);
     // Port 0 => Chrome picks a free port and writes it to DevToolsActivePort.
     const args = [
         `--remote-debugging-port=0`,
         `--user-data-dir=${userDataDir}`,
         `--window-size=${width},${height}`,
+        `--window-position=${posX},${posY}`,
         // Stealth: navigator.webdriver is gated behind this blink feature. Disabling
         // the "AutomationControlled" feature makes navigator.webdriver === false,
         // matching a normal browser. (Playwright historically left it true.)
@@ -125,7 +135,7 @@ export async function launchChrome(opts = {}) {
     let xvfbProc = null;
     const wantXvfb = opts.xvfb ?? (!opts.headless && !process.env.DISPLAY);
     if (wantXvfb) {
-        const xvfb = await startXvfb(width, height);
+        const xvfb = await startXvfb(screen.width, screen.height);
         if (xvfb) {
             xvfbProc = xvfb.proc;
             childEnv.DISPLAY = xvfb.display;
