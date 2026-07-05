@@ -8,14 +8,18 @@ import { Page } from "./page.js";
 export class Browser {
     cdp;
     launch;
-    constructor(cdp, launch) {
+    blockPrivate;
+    constructor(cdp, launch, blockPrivate) {
         this.cdp = cdp;
         this.launch = launch;
+        this.blockPrivate = blockPrivate;
     }
     static async launch(opts = {}) {
         const launch = await launchChrome(opts);
         const cdp = await CDP.connect(launch.webSocketDebuggerUrl);
-        return new Browser(cdp, launch);
+        // Default ON: a stealth browser shouldn't let visited sites port-scan your
+        // localhost/LAN. Opt out with { blockPrivateNetwork: false }.
+        return new Browser(cdp, launch, opts.blockPrivateNetwork ?? true);
     }
     /** Open a fresh tab and return an initialised Page. */
     async newPage() {
@@ -25,7 +29,7 @@ export class Browser {
             flatten: true,
         });
         const page = new Page(this.cdp, sessionId, targetId);
-        await page.init({ maskWebgl: this.launch.maskWebgl });
+        await page.init({ maskWebgl: this.launch.maskWebgl, blockPrivateNetwork: this.blockPrivate });
         return page;
     }
     async close() {

@@ -10,12 +10,15 @@ export class Browser {
   private constructor(
     private cdp: CDP,
     private launch: LaunchResult,
+    private blockPrivate: boolean,
   ) {}
 
   static async launch(opts: LaunchOptions = {}): Promise<Browser> {
     const launch = await launchChrome(opts);
     const cdp = await CDP.connect(launch.webSocketDebuggerUrl);
-    return new Browser(cdp, launch);
+    // Default ON: a stealth browser shouldn't let visited sites port-scan your
+    // localhost/LAN. Opt out with { blockPrivateNetwork: false }.
+    return new Browser(cdp, launch, opts.blockPrivateNetwork ?? true);
   }
 
   /** Open a fresh tab and return an initialised Page. */
@@ -26,7 +29,7 @@ export class Browser {
       flatten: true,
     });
     const page = new Page(this.cdp, sessionId, targetId);
-    await page.init({ maskWebgl: this.launch.maskWebgl });
+    await page.init({ maskWebgl: this.launch.maskWebgl, blockPrivateNetwork: this.blockPrivate });
     return page;
   }
 

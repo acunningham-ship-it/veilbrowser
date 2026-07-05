@@ -52,6 +52,38 @@ const INTERESTING = new Set([
   "listbox", "spinbutton", "textarea",
 ]);
 
+/**
+ * True if `url` targets a loopback / private-network host. Fingerprinters
+ * (iphey, pixelscan, …) port-scan these from page JS to profile the machine's
+ * OTHER software — VNC on :5900, a local automation API on :3001, etc. — which
+ * also leaks your LAN to every site you visit. Exotic IP encodings (decimal,
+ * hex) are a known gap; real-world scanners use the canonical forms below.
+ */
+export function isPrivateHost(url: string): boolean {
+  let host: string;
+  try { host = new URL(url).hostname.toLowerCase(); } catch { return false; }
+  host = host.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host === "::1" || host === "0.0.0.0") return true;
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
+  if (!m) return false;
+  const a = +m[1]!, b = +m[2]!;
+  return (
+    a === 127 ||                       // 127.0.0.0/8 loopback
+    a === 10 ||                        // 10.0.0.0/8
+    a === 0 ||                         // 0.0.0.0/8
+    (a === 192 && b === 168) ||        // 192.168.0.0/16
+    (a === 172 && b >= 16 && b <= 31) ||// 172.16.0.0/12
+    (a === 169 && b === 254)           // 169.254.0.0/16 link-local
+  );
+}
+
+// Only these (private) requests are intercepted, so normal browsing keeps its
+// exact timing — no global request pause. Globs over-capture slightly (e.g.
+// 172.1*); isPrivateHost() is the real gate in the handler.
+const PRIVATE_URL_PATTERNS = ["localhost", "127.", "0.0.0.0", "10.", "192.168.", "172.1", "172.2", "172.3", "169.254.", "[::1]"]
+  .flatMap((h) => ["http", "https", "ws", "wss"].map((s) => ({ urlPattern: `${s}://${h}*` })));
+
 export class Page {
   private rng = new Rng();
   private mouse: Point = { x: 100, y: 100 };
@@ -62,6 +94,10 @@ export class Page {
   private fedcmQueue: FedCmDialog[] = [];
   private fedcmWaiters: Array<(d: FedCmDialog) => void> = [];
   private lastFedcmDialogId?: string;
+  // Private-network block state (see blockPrivateNetwork).
+  private blockPrivateOff?: () => void;
+  private mainFrameId?: string;
+  private topPrivate = false; // is the page's own top-level origin private?
 
   constructor(
     private cdp: CDP,
@@ -70,7 +106,7 @@ export class Page {
   ) {}
 
   /** Enable the domains we use and arm stealth injection on every document. */
-  async init(opts: { maskWebgl?: boolean } = {}) {
+  async init(opts: { maskWebgl?: boolean; blockPrivateNetwork?: boolean } = {}) {
     await this.send("Page.enable");
     await this.send("DOM.enable");
     await this.send("Accessibility.enable");
@@ -80,6 +116,7 @@ export class Page {
     // is consistent and masking it would be a detectable lie.
     const source = buildStealth({ maskWebgl: opts.maskWebgl ?? false });
     await this.send("Page.addScriptToEvaluateOnNewDocument", { source });
+    if (opts.blockPrivateNetwork) await this.blockPrivateNetwork();
   }
 
   /**
@@ -455,6 +492,60 @@ export class Page {
     if (!account) throw new Error(`signInWithFedCm: no account at index ${idx} (dialog had ${dialog.accounts.length})`);
     await this.selectFedCmAccount(idx, dialog.dialogId);
     return account;
+  }
+
+  /**
+   * Stop the page — and any site it loads — from reaching loopback / private
+   * hosts. Detectors port-scan 127.0.0.1 from JS to fingerprint the machine's
+   * other software (and it leaks your LAN to every site). With this on, each
+   * such request is failed UNIFORMLY (same instant error, open port or closed),
+   * so the scan can't tell them apart and comes back empty. Only private-host
+   * requests are intercepted, so normal browsing keeps its exact timing.
+   *
+   * Still allowed: the agent's own top-level navigation to a private host
+   * (page.goto("http://localhost:3000")), and a localhost page loading its own
+   * localhost resources — only a PUBLIC page reaching a private host is blocked.
+   */
+  async blockPrivateNetwork() {
+    if (this.blockPrivateOff) return;
+    // Learn the main frame so we can tell an agent nav from a page's own probe.
+    try {
+      const { frameTree } = await this.send("Page.getFrameTree");
+      this.mainFrameId = frameTree?.frame?.id;
+      this.topPrivate = isPrivateHost(frameTree?.frame?.url ?? "");
+    } catch {}
+    const offNav = this.cdp.on(
+      "Page.frameNavigated",
+      (p: any) => {
+        const f = p.frame;
+        if (f && !f.parentId) { this.mainFrameId = f.id; this.topPrivate = isPrivateHost(f.url ?? ""); }
+      },
+      this.sessionId,
+    );
+    await this.send("Fetch.enable", { patterns: PRIVATE_URL_PATTERNS });
+    const offFetch = this.cdp.on(
+      "Fetch.requestPaused",
+      (p: any) => {
+        const url: string = p.request?.url ?? "";
+        // Allow: agent-driven top-level nav, and a private page's own resources.
+        // Block: any other private-host request from a public page (the scan).
+        const isMainNav = p.resourceType === "Document" && p.frameId === this.mainFrameId;
+        if (isPrivateHost(url) && !isMainNav && !this.topPrivate) {
+          this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "AccessDenied" }).catch(() => {});
+        } else {
+          this.send("Fetch.continueRequest", { requestId: p.requestId }).catch(() => {});
+        }
+      },
+      this.sessionId,
+    );
+    this.blockPrivateOff = () => { offNav(); offFetch(); };
+  }
+
+  /** Lift the private-network block (re-allows localhost/LAN requests). */
+  async unblockPrivateNetwork() {
+    this.blockPrivateOff?.();
+    this.blockPrivateOff = undefined;
+    try { await this.send("Fetch.disable"); } catch {}
   }
 
   /** Close this page and detach its target from the browser. Idempotent. */

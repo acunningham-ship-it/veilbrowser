@@ -40,6 +40,14 @@ export interface FedCmDialog {
     subtitle?: string;
     accounts: FedCmAccount[];
 }
+/**
+ * True if `url` targets a loopback / private-network host. Fingerprinters
+ * (iphey, pixelscan, …) port-scan these from page JS to profile the machine's
+ * OTHER software — VNC on :5900, a local automation API on :3001, etc. — which
+ * also leaks your LAN to every site you visit. Exotic IP encodings (decimal,
+ * hex) are a known gap; real-world scanners use the canonical forms below.
+ */
+export declare function isPrivateHost(url: string): boolean;
 export declare class Page {
     private cdp;
     readonly sessionId: string;
@@ -52,10 +60,14 @@ export declare class Page {
     private fedcmQueue;
     private fedcmWaiters;
     private lastFedcmDialogId?;
+    private blockPrivateOff?;
+    private mainFrameId?;
+    private topPrivate;
     constructor(cdp: CDP, sessionId: string, targetId?: string | undefined);
     /** Enable the domains we use and arm stealth injection on every document. */
     init(opts?: {
         maskWebgl?: boolean;
+        blockPrivateNetwork?: boolean;
     }): Promise<void>;
     /**
      * Inject cookies before navigating — e.g. a logged-in session transferred
@@ -162,6 +174,21 @@ export declare class Page {
         accountIndex?: number;
         timeout?: number;
     }): Promise<FedCmAccount>;
+    /**
+     * Stop the page — and any site it loads — from reaching loopback / private
+     * hosts. Detectors port-scan 127.0.0.1 from JS to fingerprint the machine's
+     * other software (and it leaks your LAN to every site). With this on, each
+     * such request is failed UNIFORMLY (same instant error, open port or closed),
+     * so the scan can't tell them apart and comes back empty. Only private-host
+     * requests are intercepted, so normal browsing keeps its exact timing.
+     *
+     * Still allowed: the agent's own top-level navigation to a private host
+     * (page.goto("http://localhost:3000")), and a localhost page loading its own
+     * localhost resources — only a PUBLIC page reaching a private host is blocked.
+     */
+    blockPrivateNetwork(): Promise<void>;
+    /** Lift the private-network block (re-allows localhost/LAN requests). */
+    unblockPrivateNetwork(): Promise<void>;
     /** Close this page and detach its target from the browser. Idempotent. */
     close(): Promise<void>;
 }

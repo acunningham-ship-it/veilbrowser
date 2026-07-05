@@ -132,6 +132,32 @@ Enable it **on demand**, right before the sign-in: turning it on globally hangs 
 site that silently probes FedCM at load. End-to-end run against the canonical demo IdP:
 `bun run examples/fedcm.ts`.
 
+## No localhost / LAN leak (private-network block)
+
+Fingerprinters (iphey, pixelscan, …) don't read your process list — they can't.
+They **port-scan `127.0.0.1` from page JavaScript**, timing which local ports answer,
+and map open ports to software: VNC on `:5900`, an antidetect API on `:3001`, a dev
+server on `:3000`. That both fingerprints you *and* leaks your LAN to every site you
+visit. Most stealth stacks (nodriver, Camoufox, Playwright-stealth) don't stop it.
+
+Veil does, **on by default**. Every request from a page to a loopback or private
+(`127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, `::1`, `.localhost`) address is
+failed **uniformly and instantly** — the same error whether the port is open or closed —
+so a scan can't tell them apart and comes back empty.
+
+```ts
+const browser = await Browser.launch();                 // block is on
+const browser = await Browser.launch({ blockPrivateNetwork: false }); // opt out
+// per-page, toggle at runtime:
+await page.blockPrivateNetwork();
+await page.unblockPrivateNetwork();
+```
+
+Still allowed: the agent's own top-level navigation to a private host
+(`page.goto("http://localhost:3000")`), and a localhost page loading its own localhost
+resources — only a **public page reaching a private host** is blocked. Known gap: exotic
+IP encodings (decimal/hex); real-world scanners use the canonical forms above.
+
 ## Detection scorecard (measured, Chrome 148)
 
 Run it yourself: `bun run examples/detect.ts` (headless) or `VEIL_HEADFUL=1 bun run

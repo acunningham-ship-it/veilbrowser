@@ -31,6 +31,14 @@ export interface LaunchOptions {
     };
     proxy?: string;
     /**
+     * Block visited sites from reaching loopback / private-network hosts (default
+     * true). Detectors port-scan 127.0.0.1 from JS to fingerprint the machine's
+     * other software; it also leaks your LAN to every page. The agent's own
+     * top-level navigation to a private host still works. Set false to allow a
+     * page to reach localhost (e.g. driving your own local app via subresources).
+     */
+    blockPrivateNetwork?: boolean;
+    /**
      * WebGL backend:
      *  - "hardware": use the real GPU via ANGLE/EGL → genuine, consistent vendor.
      *    Works headless AND headful (no Xvfb needed). Best stealth — nothing spoofed.

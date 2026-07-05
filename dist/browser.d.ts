@@ -7,6 +7,7 @@ import { Page } from "./page.js";
 export declare class Browser {
     private cdp;
     private launch;
+    private blockPrivate;
     private constructor();
     static launch(opts?: LaunchOptions): Promise<Browser>;
     /** Open a fresh tab and return an initialised Page. */
