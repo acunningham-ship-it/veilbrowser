@@ -23,6 +23,23 @@ export interface Snapshot {
     text: string;
     elements: Element[];
 }
+/** One account offered in a FedCM account chooser. */
+export interface FedCmAccount {
+    accountId: string;
+    email?: string;
+    name?: string;
+    givenName?: string;
+    idpConfigUrl?: string;
+}
+/** A FedCM dialog Chrome would normally render as native browser UI. */
+export interface FedCmDialog {
+    dialogId: string;
+    /** "AccountChooser" | "AutoReauthn" | "ConfirmIdpLogin" | "SelectAccount" ... */
+    type: string;
+    title?: string;
+    subtitle?: string;
+    accounts: FedCmAccount[];
+}
 export declare class Page {
     private cdp;
     readonly sessionId: string;
@@ -31,6 +48,10 @@ export declare class Page {
     private mouse;
     private refs;
     private closed;
+    private fedcmOff?;
+    private fedcmQueue;
+    private fedcmWaiters;
+    private lastFedcmDialogId?;
     constructor(cdp: CDP, sessionId: string, targetId?: string | undefined);
     /** Enable the domains we use and arm stealth injection on every document. */
     init(opts?: {
@@ -104,6 +125,43 @@ export declare class Page {
     innerText(): Promise<string>;
     /** Press a single named key on the focused element (Enter, Tab, Escape, arrows...). */
     press(key: string): Promise<void>;
+    /**
+     * Start intercepting FedCM on this page. Call it ON DEMAND, right before the
+     * sign-in you're driving — never as blanket startup setup. Any page that
+     * silently probes FedCM at load (GoHighLevel, many SaaS logins) will HANG if
+     * interception is on and nothing resolves the probe, so keep it off until you
+     * need it and disableFedCm() afterwards.
+     *
+     * With {autoSelectFirst:true} (default) veil selects account 0 on every dialog
+     * automatically — the one-liner for "just sign me in". Pass false to inspect
+     * accounts via waitForFedCmDialog() and choose with selectFedCmAccount().
+     */
+    enableFedCm(opts?: {
+        autoSelectFirst?: boolean;
+    }): Promise<void>;
+    /** Resolve with the next FedCM dialog (or one already queued since enable). */
+    waitForFedCmDialog(opts?: {
+        timeout?: number;
+    }): Promise<FedCmDialog>;
+    /** Pick an account in the current FedCM dialog (index into dialog.accounts). */
+    selectFedCmAccount(accountIndex?: number, dialogId?: string | undefined): Promise<void>;
+    /** Dismiss the current FedCM dialog (decline the sign-in). */
+    dismissFedCm(dialogId?: string | undefined): Promise<void>;
+    /** Stop intercepting FedCM. Call after a sign-in so a later navigation that
+     *  probes FedCM isn't left hanging on us. */
+    disableFedCm(): Promise<void>;
+    /**
+     * One call to complete an active federated sign-in: enables FedCM, clicks the
+     * "Sign in with Google" button (a snapshot ref), waits for the account
+     * chooser, selects an account, and returns it. For passive/one-tap flows that
+     * fire on page load, enableFedCm() BEFORE navigating, then
+     * waitForFedCmDialog() — the default autoSelectFirst signs you straight in.
+     */
+    signInWithFedCm(opts?: {
+        triggerRef?: number;
+        accountIndex?: number;
+        timeout?: number;
+    }): Promise<FedCmAccount>;
     /** Close this page and detach its target from the browser. Idempotent. */
     close(): Promise<void>;
 }

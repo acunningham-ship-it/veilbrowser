@@ -35,6 +35,10 @@ const TOOLS = [
         inputSchema: { type: "object", properties: {} } },
     { name: "veil_eval", description: "Evaluate a JS expression in the page and return the value.",
         inputSchema: { type: "object", properties: { expression: { type: "string" } }, required: ["expression"] } },
+    { name: "veil_fedcm_enable", description: "Arm FedCM interception BEFORE navigating to a site that shows a Google/federated 'one-tap' sign-in on load. Order: veil_fedcm_enable -> veil_goto the sign-in page -> veil_fedcm_signin. (Skip this for an active 'Sign in with Google' button; veil_fedcm_signin arms itself when you pass a triggerRef.)",
+        inputSchema: { type: "object", properties: {} } },
+    { name: "veil_fedcm_signin", description: "Complete a federated ('Sign in with Google', FedCM) login that Chrome renders as a native chooser no click can reach: waits for the intercepted account chooser, selects an account, and returns it. Pass triggerRef to first click an active sign-in button; omit it for one-tap/passive flows (call veil_fedcm_enable before navigating). accountIndex defaults to 0.",
+        inputSchema: { type: "object", properties: { triggerRef: { type: "number" }, accountIndex: { type: "number" } } } },
     { name: "veil_close", description: "Close the browser.", inputSchema: { type: "object", properties: {} } },
 ];
 async function callTool(name, args) {
@@ -69,6 +73,25 @@ async function callTool(name, args) {
         }
         case "veil_eval":
             return text(JSON.stringify(await p.evaluate(args.expression)));
+        case "veil_fedcm_enable":
+            await p.enableFedCm({ autoSelectFirst: false });
+            return text("FedCM armed. Navigate to the sign-in page (one-tap fires on load), then call veil_fedcm_signin.");
+        case "veil_fedcm_signin": {
+            if (args.triggerRef != null) {
+                await p.enableFedCm({ autoSelectFirst: false });
+                await p.click(args.triggerRef);
+            }
+            const dialog = await p.waitForFedCmDialog({ timeout: args.timeout ?? 30000 });
+            const idx = args.accountIndex ?? 0;
+            const account = dialog.accounts[idx];
+            if (!account) {
+                await p.dismissFedCm();
+                throw new Error(`FedCM dialog had ${dialog.accounts.length} account(s); none at index ${idx}`);
+            }
+            await p.selectFedCmAccount(idx, dialog.dialogId);
+            await p.disableFedCm();
+            return text(`signed in via FedCM as ${account.email ?? account.name ?? account.accountId}`);
+        }
         default:
             throw new Error(`unknown tool: ${name}`);
     }
@@ -85,7 +108,7 @@ async function handle(msg) {
             send({ jsonrpc: "2.0", id, result: {
                     protocolVersion: "2024-11-05",
                     capabilities: { tools: {} },
-                    serverInfo: { name: "veil", version: "0.1.0" },
+                    serverInfo: { name: "veil", version: "0.2.0" },
                 } });
             return;
         }

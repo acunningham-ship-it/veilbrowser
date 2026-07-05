@@ -106,6 +106,32 @@ The selling point isn't only stealth — it's that agents drive it *well*:
 - **`click` / `fill` / `type`** drive real CDP input with human dynamics.
 - **`waitFor(expr)`** replaces flaky fixed sleeps.
 
+## Federated sign-in (FedCM)
+
+"Sign in with Google" one-tap and the newer `navigator.credentials.get({identity})`
+flows render their account chooser as **native browser UI** — the button is a
+cross-origin IdP iframe and the chooser is browser chrome, so no synthetic click can
+reach either. That's a wall for agents logging into Google-SSO apps. Veil drives it
+over CDP's FedCM domain instead:
+
+```ts
+// Passive / one-tap (fires on load once you're signed in to the IdP):
+await page.enableFedCm();          // autoSelectFirst — picks account 0 for you
+await page.goto("https://app.example.com/");
+await page.waitForFedCmDialog();   // chooser intercepted + auto-selected
+await page.disableFedCm();
+
+// Active "Sign in with Google" button, one call:
+const account = await page.signInWithFedCm({ triggerRef: btn.ref });
+```
+
+`enableFedCm` also `resetCooldown`s (Chrome silently suppresses the dialog after
+repeated dismissals) and binds account selection to the page's own CDP session — pick
+the wrong target and the dialog, plus the page's `credentials.get()`, hangs forever.
+Enable it **on demand**, right before the sign-in: turning it on globally hangs any
+site that silently probes FedCM at load. End-to-end run against the canonical demo IdP:
+`bun run examples/fedcm.ts`.
+
 ## Detection scorecard (measured, Chrome 148)
 
 Run it yourself: `bun run examples/detect.ts` (headless) or `VEIL_HEADFUL=1 bun run
@@ -146,9 +172,9 @@ DataDome/Kasada, logged-in sessions, high-volume behavioural trust. We test befo
 ## Use from an AI agent (MCP)
 
 Veil ships an MCP server (`src/mcp.ts`) — already wired into **persoje**
-(`~/.config/persoje/mcp.json`), exposing 8 tools: `goto`, `snapshot`, `click`, `fill`,
-`type`, `screenshot`, `eval`, `close`. Verified end-to-end through persoje's own MCP
-client (discover → goto → snapshot). Any MCP host works:
+(`~/.config/persoje/mcp.json`), exposing 10 tools: `goto`, `snapshot`, `click`, `fill`,
+`type`, `screenshot`, `eval`, `fedcm_enable`, `fedcm_signin`, `close`. Verified end-to-end
+through persoje's own MCP client (discover → goto → snapshot). Any MCP host works:
 
 ```jsonc
 { "servers": { "veil": {

@@ -27,6 +27,25 @@ export interface Snapshot {
   elements: Element[];
 }
 
+/** One account offered in a FedCM account chooser. */
+export interface FedCmAccount {
+  accountId: string;
+  email?: string;
+  name?: string;
+  givenName?: string;
+  idpConfigUrl?: string;
+}
+
+/** A FedCM dialog Chrome would normally render as native browser UI. */
+export interface FedCmDialog {
+  dialogId: string;
+  /** "AccountChooser" | "AutoReauthn" | "ConfirmIdpLogin" | "SelectAccount" ... */
+  type: string;
+  title?: string;
+  subtitle?: string;
+  accounts: FedCmAccount[];
+}
+
 const INTERESTING = new Set([
   "button", "link", "textbox", "searchbox", "combobox", "checkbox", "radio",
   "menuitem", "menuitemcheckbox", "tab", "switch", "slider", "option",
@@ -38,6 +57,11 @@ export class Page {
   private mouse: Point = { x: 100, y: 100 };
   private refs = new Map<number, { backendNodeId: number; center: Point }>();
   private closed = false;
+  // FedCM interception state (see enableFedCm).
+  private fedcmOff?: () => void;
+  private fedcmQueue: FedCmDialog[] = [];
+  private fedcmWaiters: Array<(d: FedCmDialog) => void> = [];
+  private lastFedcmDialogId?: string;
 
   constructor(
     private cdp: CDP,
@@ -317,6 +341,120 @@ export class Page {
     await this.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base, ...(k.text ? { text: k.text } : {}) });
     if (k.text) await this.send("Input.dispatchKeyEvent", { type: "char", ...base, text: k.text });
     await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  }
+
+  // --- FedCM: drive federated sign-in ("Sign in with Google" one-tap, etc.) ---
+  // Chrome renders FedCM account choosers as native browser UI that no synthetic
+  // mouse click can reach (the button is a cross-origin IdP iframe, and the
+  // chooser itself is browser chrome). FedCm.enable routes the dialog to us over
+  // CDP instead, so an agent can actually complete a federated login.
+  // End-to-end run: examples/fedcm.ts.
+
+  /**
+   * Start intercepting FedCM on this page. Call it ON DEMAND, right before the
+   * sign-in you're driving — never as blanket startup setup. Any page that
+   * silently probes FedCM at load (GoHighLevel, many SaaS logins) will HANG if
+   * interception is on and nothing resolves the probe, so keep it off until you
+   * need it and disableFedCm() afterwards.
+   *
+   * With {autoSelectFirst:true} (default) veil selects account 0 on every dialog
+   * automatically — the one-liner for "just sign me in". Pass false to inspect
+   * accounts via waitForFedCmDialog() and choose with selectFedCmAccount().
+   */
+  async enableFedCm(opts: { autoSelectFirst?: boolean } = {}) {
+    const autoSelect = opts.autoSelectFirst ?? true;
+    await this.send("FedCm.enable", { disableRejectionDelay: true });
+    // A prior dismissal drops the IdP into a cooldown where the dialog silently
+    // won't reappear; clear it so the next trigger actually shows.
+    try { await this.send("FedCm.resetCooldown"); } catch {}
+    if (this.fedcmOff) return;
+    this.fedcmOff = this.cdp.on(
+      "FedCm.dialogShown",
+      (p: any) => {
+        const dialog: FedCmDialog = {
+          dialogId: p.dialogId,
+          type: p.dialogType,
+          title: p.title,
+          subtitle: p.subtitle,
+          accounts: (p.accounts ?? []).map((a: any) => ({
+            accountId: a.accountId,
+            email: a.email,
+            name: a.name,
+            givenName: a.givenName,
+            idpConfigUrl: a.idpConfigUrl,
+          })),
+        };
+        this.lastFedcmDialogId = dialog.dialogId;
+        // Bind selection to THIS session. CDP strips the sessionId off the event
+        // params, and selecting on the wrong target leaves the dialog — and the
+        // RP page's navigator.credentials.get() — hanging unresolved.
+        if (autoSelect && dialog.accounts.length) {
+          this.selectFedCmAccount(0, dialog.dialogId).catch(() => {});
+        }
+        const waiter = this.fedcmWaiters.shift();
+        if (waiter) waiter(dialog);
+        else this.fedcmQueue.push(dialog);
+      },
+      this.sessionId,
+    );
+  }
+
+  /** Resolve with the next FedCM dialog (or one already queued since enable). */
+  async waitForFedCmDialog(opts: { timeout?: number } = {}): Promise<FedCmDialog> {
+    const queued = this.fedcmQueue.shift();
+    if (queued) return queued;
+    return new Promise<FedCmDialog>((resolve, reject) => {
+      const waiter = (d: FedCmDialog) => {
+        clearTimeout(timer);
+        resolve(d);
+      };
+      const timer = setTimeout(() => {
+        const i = this.fedcmWaiters.indexOf(waiter);
+        if (i >= 0) this.fedcmWaiters.splice(i, 1);
+        reject(new Error("waitForFedCmDialog: timed out (is FedCM enabled, and are you signed in to the IdP?)"));
+      }, opts.timeout ?? 30000);
+      this.fedcmWaiters.push(waiter);
+    });
+  }
+
+  /** Pick an account in the current FedCM dialog (index into dialog.accounts). */
+  async selectFedCmAccount(accountIndex = 0, dialogId = this.lastFedcmDialogId) {
+    if (!dialogId) throw new Error("selectFedCmAccount: no FedCM dialog has appeared yet");
+    await this.send("FedCm.selectAccount", { dialogId, accountIndex });
+  }
+
+  /** Dismiss the current FedCM dialog (decline the sign-in). */
+  async dismissFedCm(dialogId = this.lastFedcmDialogId) {
+    if (!dialogId) return;
+    await this.send("FedCm.dismissDialog", { dialogId, triggerCooldown: false });
+  }
+
+  /** Stop intercepting FedCM. Call after a sign-in so a later navigation that
+   *  probes FedCM isn't left hanging on us. */
+  async disableFedCm() {
+    this.fedcmOff?.();
+    this.fedcmOff = undefined;
+    this.fedcmQueue = [];
+    this.fedcmWaiters = [];
+    try { await this.send("FedCm.disable"); } catch {}
+  }
+
+  /**
+   * One call to complete an active federated sign-in: enables FedCM, clicks the
+   * "Sign in with Google" button (a snapshot ref), waits for the account
+   * chooser, selects an account, and returns it. For passive/one-tap flows that
+   * fire on page load, enableFedCm() BEFORE navigating, then
+   * waitForFedCmDialog() — the default autoSelectFirst signs you straight in.
+   */
+  async signInWithFedCm(opts: { triggerRef?: number; accountIndex?: number; timeout?: number } = {}): Promise<FedCmAccount> {
+    await this.enableFedCm({ autoSelectFirst: false });
+    if (opts.triggerRef != null) await this.click(opts.triggerRef);
+    const dialog = await this.waitForFedCmDialog({ timeout: opts.timeout });
+    const idx = opts.accountIndex ?? 0;
+    const account = dialog.accounts[idx];
+    if (!account) throw new Error(`signInWithFedCm: no account at index ${idx} (dialog had ${dialog.accounts.length})`);
+    await this.selectFedCmAccount(idx, dialog.dialogId);
+    return account;
   }
 
   /** Close this page and detach its target from the browser. Idempotent. */
