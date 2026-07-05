@@ -54,20 +54,18 @@ export function buildStealth(opts = {}) {
     patchGetter(Object.getPrototypeOf(navigator), 'languages', ['en-US', 'en']);
   }
 
-  // deviceMemory: the spec caps this at 8. Some Linux builds leak the raw host
-  // RAM (e.g. 32) — an impossible value no real Chrome reports. Clamp ONLY when
-  // it exceeds the spec max.
-  try { if (navigator.deviceMemory > 8) patchGetter(Object.getPrototypeOf(navigator), 'deviceMemory', 8); } catch (e) {}
-
-  // Taskbar inset: a bare virtual display (Xvfb, no window manager) reports
-  // screen.availHeight === screen.height — no desktop furniture, a server tell.
-  // A real desktop reserves ~48px for a taskbar/dock. Patch ONLY when avail
-  // fills the whole screen (the anomaly); leave a real WM's values untouched.
-  try {
-    if (screen.availWidth === screen.width && screen.availHeight === screen.height) {
-      patchGetter(screen, 'availHeight', screen.height - 48);
-    }
-  } catch (e) {}
+  // DELIBERATELY NOT PATCHED — deviceMemory and screen.availHeight.
+  // A tempting "fix" is to clamp deviceMemory to the spec max of 8, and to shave
+  // a taskbar inset off availHeight on a WM-less Xvfb (where availHeight === height).
+  // Both were tried and REMOVED: a JS getter override is itself the tell. A
+  // fingerprinter reading the property descriptor's getter sees "() => value"
+  // instead of "[native code]", or notices availHeight became an OWN property of
+  // the screen instance instead of being inherited from Screen.prototype. That is
+  // the exact "masking detected" signature veil exists to avoid — worse than the
+  // anomalous value it hid. On a real user's machine these values are already sane
+  // (Chrome caps deviceMemory at 8; a real desktop has a taskbar), so nothing needs
+  // patching. On a headless server box that leaks an out-of-spec deviceMemory, fix
+  // it at the source (the host), never with a getter a page can unmask.
 ${webglBlock}
 })();
 `;

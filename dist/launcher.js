@@ -9,7 +9,7 @@
  * We launch with the flags a normal Chrome uses, minus the noise.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 const CANDIDATES = [
@@ -30,6 +30,45 @@ export function findChrome() {
 }
 const RENDER_NODE = "/dev/dri/renderD128";
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const LIVE = new Set();
+let reaperInstalled = false;
+function killGroup(proc) {
+    const pid = proc?.pid;
+    if (!pid)
+        return;
+    try {
+        process.kill(-pid, "SIGKILL"); // negative pid = the whole process group
+    }
+    catch {
+        try {
+            proc.kill("SIGKILL"); // group already gone → fall back to the single pid
+        }
+        catch { }
+    }
+}
+function reapAll() {
+    for (const b of LIVE) {
+        killGroup(b.child);
+        killGroup(b.xvfb);
+    }
+}
+const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+function installReaper() {
+    if (reaperInstalled)
+        return;
+    reaperInstalled = true;
+    // 'exit' fires on a normal return AND during an uncaught-exception exit — sync
+    // context, exactly right for a group-kill.
+    process.on("exit", reapAll);
+    // Signals don't run 'exit' handlers on their own, so catch them, reap, and then
+    // leave with the conventional 128+signum code.
+    for (const sig of Object.keys(SIGNAL_EXIT)) {
+        process.on(sig, () => {
+            reapAll();
+            process.exit(SIGNAL_EXIT[sig]);
+        });
+    }
+}
 /** Start an Xvfb virtual display; resolves once it's ready, or null if unavailable. */
 async function startXvfb(width, height) {
     let n = 99;
@@ -73,11 +112,36 @@ export async function launchChrome(opts = {}) {
     const ephemeral = !opts.userDataDir;
     const userDataDir = opts.userDataDir ?? join(tmpdir(), `veil-${process.pid}-${Date.now()}`);
     mkdirSync(userDataDir, { recursive: true });
-    // Reused profiles leave a stale DevToolsActivePort (and Singleton* locks) from
-    // the previous Chrome. waitForPort would read the OLD port and connect to a
-    // dead endpoint. Clear them so we wait for THIS launch's fresh port.
+    // Reused profiles leave a stale DevToolsActivePort from the previous Chrome;
+    // waitForPort would read the OLD port and connect to a dead endpoint. Clear it
+    // so we wait for THIS launch's fresh port.
     rmSync(join(userDataDir, "DevToolsActivePort"), { force: true });
-    rmSync(join(userDataDir, "SingletonLock"), { force: true });
+    // SingletonLock records who owns this profile — Chrome writes it as a symlink
+    // "<host>-<pid>". Only clear a STALE lock (its pid is dead). If a LIVE Chrome
+    // still owns the profile, REFUSE: two Chromes on one userDataDir silently
+    // corrupt it (this was the real cause of an "Initializing…" hang). Blindly
+    // removing the lock, as before, let that corruption happen.
+    const lockPath = join(userDataDir, "SingletonLock");
+    let ownerPid = -1; // -1 = no lock present
+    try {
+        ownerPid = parseInt(readlinkSync(lockPath).split("-").pop() || "", 10);
+    }
+    catch { }
+    if (ownerPid > 0) {
+        let alive = false;
+        try {
+            process.kill(ownerPid, 0);
+            alive = true;
+        }
+        catch (e) {
+            alive = e?.code === "EPERM";
+        }
+        if (alive) {
+            throw new Error(`Profile "${userDataDir}" is already in use by Chrome (pid ${ownerPid}). ` +
+                `Close it, or launch with a different userDataDir.`);
+        }
+    }
+    rmSync(lockPath, { force: true }); // absent or stale → safe to clear
     rmSync(join(userDataDir, "SingletonCookie"), { force: true });
     rmSync(join(userDataDir, "SingletonSocket"), { force: true });
     // The screen (virtual display) is a realistic desktop; the window sits INSIDE it
@@ -147,7 +211,24 @@ export async function launchChrome(opts = {}) {
             args.unshift("--headless=new");
         }
     }
-    const child = spawn(chromePath, args, { stdio: ["ignore", "ignore", "pipe"], env: childEnv });
+    // detached => Chrome leads its own process group, so killGroup() can take down
+    // the whole renderer/gpu/zygote tree in one shot instead of orphaning it.
+    const child = spawn(chromePath, args, { stdio: ["ignore", "ignore", "pipe"], env: childEnv, detached: true });
+    const live = { child, xvfb: xvfbProc, userDataDir, ephemeral };
+    LIVE.add(live);
+    installReaper();
+    // If Chrome dies on its own (crash, external kill), drop it from the reaper set,
+    // tear down its Xvfb, and clean an ephemeral profile — no leak, no stale dir.
+    child.on("exit", () => {
+        LIVE.delete(live);
+        killGroup(xvfbProc);
+        if (ephemeral) {
+            try {
+                rmSync(userDataDir, { recursive: true, force: true });
+            }
+            catch { }
+        }
+    });
     const portFile = join(userDataDir, "DevToolsActivePort");
     const wsPath = await waitForPort(portFile, child);
     const port = wsPath.port;
@@ -155,16 +236,9 @@ export async function launchChrome(opts = {}) {
     const res = await fetch(`http://127.0.0.1:${port}/json/version`);
     const info = (await res.json());
     const kill = () => {
-        try {
-            child.kill("SIGKILL");
-        }
-        catch { }
-        if (xvfbProc) {
-            try {
-                xvfbProc.kill("SIGKILL");
-            }
-            catch { }
-        }
+        LIVE.delete(live);
+        killGroup(child); // whole process group, not just the main pid
+        killGroup(xvfbProc);
         if (ephemeral) {
             try {
                 rmSync(userDataDir, { recursive: true, force: true });

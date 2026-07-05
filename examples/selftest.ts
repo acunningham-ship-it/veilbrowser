@@ -40,7 +40,11 @@ try {
     webglVendor: (() => {
       try {
         const gl = document.createElement("canvas").getContext("webgl") as WebGLRenderingContext;
-        return gl.getParameter(37445);
+        // UNMASKED_VENDOR_WEBGL (37445) only returns a value once the debug
+        // extension is enabled — exactly what real fingerprinters do. Without it,
+        // headless Chrome hands back null and makes a real GPU look absent.
+        const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+        return dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(37445);
       } catch {
         return "n/a";
       }
