@@ -140,10 +140,12 @@ and map open ports to software: VNC on `:5900`, an antidetect API on `:3001`, a 
 server on `:3000`. That both fingerprints you *and* leaks your LAN to every site you
 visit. Most stealth stacks (nodriver, Camoufox, Playwright-stealth) don't stop it.
 
-Veil does, **on by default**. Every request from a page to a loopback or private
-(`127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, `::1`, `.localhost`) address is
-failed **uniformly and instantly** — the same error whether the port is open or closed —
-so a scan can't tell them apart and comes back empty.
+Veil does, **on by default**. Every HTTP-family request (`fetch`/XHR/`EventSource`/
+`<img>`/`<script>`) from a page to a loopback or private (`127.0.0.0/8`, `10/8`,
+`172.16/12`, `192.168/16`, `::1`, `.localhost`) address is failed **uniformly and
+instantly** — the same error whether the port is open or closed — so a scan can't tell
+them apart and comes back empty. (That's the vector real detectors use; the `:3001`
+antidetect API and `:5900` VNC probes are plain HTTP.)
 
 ```ts
 const browser = await Browser.launch();                 // block is on
@@ -155,8 +157,11 @@ await page.unblockPrivateNetwork();
 
 Still allowed: the agent's own top-level navigation to a private host
 (`page.goto("http://localhost:3000")`), and a localhost page loading its own localhost
-resources — only a **public page reaching a private host** is blocked. Known gap: exotic
-IP encodings (decimal/hex); real-world scanners use the canonical forms above.
+resources — only a **public page reaching a private host** is blocked. Known gaps (honest):
+raw **WebSocket** to a private host isn't interceptable via CDP's Fetch domain, so those
+fall back to Chrome's own Private Network Access (a timeout, not a uniform block); and
+exotic IP encodings (decimal/hex) aren't matched — real-world scanners use the canonical
+forms above.
 
 ## Detection scorecard (measured, Chrome 148)
 

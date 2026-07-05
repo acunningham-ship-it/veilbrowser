@@ -39,9 +39,12 @@ export function isPrivateHost(url) {
 }
 // Only these (private) requests are intercepted, so normal browsing keeps its
 // exact timing — no global request pause. Globs over-capture slightly (e.g.
-// 172.1*); isPrivateHost() is the real gate in the handler.
+// 172.1*); isPrivateHost() is the real gate in the handler. http/https only:
+// CDP's Fetch domain does not intercept WebSocket handshakes, so raw ws:// to a
+// private host falls back to Chrome's own Private Network Access (a timeout, not
+// a uniform block). Real port-scanners (and the :3001/:5900 probes) use HTTP.
 const PRIVATE_URL_PATTERNS = ["localhost", "127.", "0.0.0.0", "10.", "192.168.", "172.1", "172.2", "172.3", "169.254.", "[::1]"]
-    .flatMap((h) => ["http", "https", "ws", "wss"].map((s) => ({ urlPattern: `${s}://${h}*` })));
+    .flatMap((h) => ["http", "https"].map((s) => ({ urlPattern: `${s}://${h}*` })));
 export class Page {
     cdp;
     sessionId;
