@@ -6,7 +6,7 @@
 
 *Veil driving real Chrome: bot.sannysoft.com all-green, then straight through Cloudflare's JS challenge — no patches, no plugins.*
 
-To Instagram, Google, Reddit, Datadome, Akamai — Veil *is* Chrome. Same binary, same
+To Instagram, Google, Reddit, Cloudflare — Veil *is* Chrome. Same binary, same
 TLS, same JS engine, same canvas/WebGL/font fingerprint a human's browser has. We
 don't reimplement the browser (that's Chromium's 20-year, 1000-engineer job, and a
 hand-rolled engine is *easier* to fingerprint, not harder). We replace the part that
@@ -41,6 +41,10 @@ lives and how agents use it**:
   zero glue.
 - **Agent-first, not scraper-first.** Accessibility-tree refs and human input are built for
   an LLM driving the browser, not for a scraping script.
+- **Does two things the others don't.** Drives the native **"Sign in with Google" (FedCM)**
+  account chooser over CDP — agents are otherwise walled out of Google-SSO apps entirely —
+  and **blocks visited sites from port-scanning your localhost/LAN** (on by default). Neither
+  `nodriver`, Camoufox, nor Playwright-stealth does either.
 
 If you're in Python and just want raw stealth, use `nodriver` or Camoufox — they're great.
 Veil is for **TypeScript agents and MCP hosts.**
@@ -229,13 +233,15 @@ through persoje's own MCP client (discover → goto → snapshot). Any MCP host 
 ```bash
 bun run examples/selftest.ts   # end-to-end: launch, stealth, snapshot, interact
 bun run examples/detect.ts     # bot-detection scorecard (bot.sannysoft.com, etc.)
-deno test tests/*.test.ts      # unit tests: PRNG, mouse paths, ref numbering
+bun test                       # unit tests (browser-launching ones skip under CI)
 ```
 
 Unit tests cover:
 - **PRNG (`human.test.ts`)**: xorshift32 determinism, range/int bounds, keystroke cadence, mouse timing
 - **Snapshot refs (`snapshot.test.ts`)**: ref numbering (1-based, sequential, no gaps), AX-tree filtering
 - **CDP framing (`cdp-messages.test.ts`)**: JSON-RPC structure, sessionId routing, command/response correlation
+- **Private-network classifier (`private-host.test.ts`)**: loopback/RFC1918 vs public host detection (the block's decision)
+- **Lifecycle (`lifecycle.test.ts`, local only)**: launch/close, process-group reaping, profile-lock refusal
 
 ## Status
 
@@ -247,14 +253,18 @@ Unit tests cover:
 - AX-tree snapshot → stable integer refs for agent-friendly interaction
 - Human-like input: curved Bézier mouse paths, jittered keystroke timing, real CDP input
 - PNG screenshots (vision-model ready)
+- Headful-on-server via **auto-managed Xvfb** — "headful" with no desktop (best fingerprint scores)
+- **FedCM sign-in** — drives the native "Sign in with Google" / `credentials.get()` account chooser over CDP (`examples/fedcm.ts`)
+- **No localhost/LAN leak** — blocks visited sites from port-scanning your private network (on by default)
+- Clean process lifecycle — detached process groups + a reaper, so Ctrl-C/crash never orphans Chrome
 - MCP server (`src/mcp.ts`) — stdio JSON-RPC; persoje, Claude, any MCP host drives Veil natively
 
 **Roadmap toward production:**
 - [ ] Adversarial fingerprint suite — continuous scoring (CreepJS, sannysoft, Datadome demo)
 - [ ] `Runtime.enable`-leak hardening via isolated worlds for all eval
-- [ ] Headful-on-server via managed Xvfb; profile + proxy pools
+- [ ] Profile + residential-proxy pools (the "Veil Cloud" layer)
 - [ ] Vision-based element grounding fallback (sparse AX-trees, canvas apps)
-- [ ] Network interception; response capture; session persistence & profile warm-up
+- [ ] Response-body capture; session persistence & profile warm-up
 - [ ] Per-tab concurrency (many tabs, one socket — transport already supports it)
 
 ## License

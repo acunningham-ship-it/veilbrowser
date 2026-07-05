@@ -113,7 +113,7 @@ async function handle(msg: any): Promise<void> {
       send({ jsonrpc: "2.0", id, result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "veil", version: "0.2.0" },
+        serverInfo: { name: "veil", version: "0.3.0" },
       } });
       return;
     }
