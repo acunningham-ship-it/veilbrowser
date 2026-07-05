@@ -145,17 +145,22 @@ Measured on an AMD Radeon (Renoir APU) host, real hardware GL via ANGLE/EGL:
 | Veil — headless + real GPU | server/fast | **57/57** | 33% | 0% |
 | _(earlier: SwiftShader + heavy stealth)_ | _superseded_ | 57/57 | 67% | 20% |
 
-**Live targets** (`bun run examples/hardtargets.ts`, residential IP):
+**Live targets** — the full [scrapingcourse.com](https://www.scrapingcourse.com/) challenge
+suite, reproducible with `bun run examples/scrapingcourse.ts` (residential IP, headful):
 
 | Target | Result |
 |---|---|
-| Cloudflare JS challenge (scrapingcourse) | **Bypassed** |
-| Antibot challenge (scrapingcourse) | **Bypassed** |
+| Antibot Challenge | **Bypassed** — "You bypassed the Antibot challenge" (~3s auto-solve) |
+| Cloudflare JS Challenge | **Bypassed** — "You bypassed the Cloudflare challenge" |
+| Cloudflare Antibot + login | **Bypassed** — cleared the wall, rendered the real login form |
+| Cloudflare **Turnstile** + login | Page loads; the **interactive** Turnstile widget is **not** auto-solved |
+| Demo suite — JS rendering, infinite scroll, pagination, table parsing, load-more, CSRF/login | all served clean |
 | Reddit — incl. its JS challenge | served clean (challenge auto-solved) |
 | Instagram — public profile | served clean |
 
-Honest gaps we do **not** yet claim: interactive Turnstile/reCAPTCHA, enterprise
-DataDome/Kasada, logged-in sessions, high-volume behavioural trust. We test before we claim.
+**11/12 cleared.** The one that doesn't is interactive Turnstile — which is exactly the
+line below. Honest gaps we do **not** yet claim: interactive Turnstile/reCAPTCHA, enterprise
+DataDome/Kasada, high-volume behavioural trust on logged-in sessions. We test before we claim.
 
 **What moved the needle (each verified by re-running the suite):**
 1. **Real GPU, not SwiftShader.** `--use-gl=angle --use-angle=gl-egl` drives the actual
