@@ -383,6 +383,22 @@ export class Page {
     await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
   }
 
+  /**
+   * Scroll the page by a pixel delta via a real mouse-wheel event dispatched at
+   * the current cursor position (positive dy scrolls down, positive dx right).
+   * Use it to reveal lazy-loaded / off-screen content before snapshot().
+   */
+  async scroll(dx: number, dy: number) {
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: this.mouse.x,
+      y: this.mouse.y,
+      deltaX: dx,
+      deltaY: dy,
+    });
+    await sleep(this.rng.range(80, 200)); // settle, like a human watching content load
+  }
+
   /** Type text into the focused element with human cadence. Each character is
    *  dispatched as a real keydown/char/keyUp with the right key, code, and
    *  virtual-key code (see keyInfo) — the bare text-only events this used to send
