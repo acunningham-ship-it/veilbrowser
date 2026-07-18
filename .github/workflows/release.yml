@@ -1,0 +1,54 @@
+name: Release
+
+# Auto-publish @achamm/veilbrowser to npm when a version tag is pushed.
+# Release flow: bump "version" in package.json → commit → `git tag vX.Y.Z && git push --tags`.
+# Dormant until the NPM_TOKEN repo secret is set (an npm automation token) — until then the
+# publish step no-ops with a warning, same pattern as a deploy that waits on its token.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck + test (gate the release)
+        run: |
+          bun run typecheck
+          bun test
+
+      - name: Build + verify committed dist is fresh
+        run: |
+          bun run build
+          git diff --exit-code dist/ \
+            || (echo "::error::dist/ is stale — run 'bun run build' and commit it before tagging" && exit 1)
+
+      - name: Verify tag matches package.json version
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          TAG="${GITHUB_REF_NAME#v}"
+          test "$PKG" = "$TAG" || (echo "::error::tag $GITHUB_REF_NAME != package.json $PKG" && exit 1)
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN not set — skipping publish. Add an npm automation token as the NPM_TOKEN repo secret to enable auto-publish."
+            exit 0
+          fi
+          npm publish --access public
