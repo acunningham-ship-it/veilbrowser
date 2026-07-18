@@ -65,16 +65,41 @@ export function isPrivateHost(url: string): boolean {
   host = host.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   if (host === "::1" || host === "0.0.0.0") return true;
+  // IPv6 unique-local (fc00::/7) — the v6 analog of RFC1918 LAN space. The
+  // first hextet is fc00–fdff (never abbreviated, so exactly 4 hex chars).
+  if (/^f[cd][0-9a-f]{2}:/.test(host)) return true;
+  // IPv4-mapped IPv6 (::ffff:a.b.c.d) — same IPv4 host wearing a v6 hat; a
+  // public page could reach ::ffff:127.0.0.1 to hit loopback. The URL parser
+  // normalizes the tail to two hex hextets (::ffff:7f00:1), so fold it back to
+  // a dotted quad and re-apply the IPv4 rules.
+  if (host.startsWith("::ffff:")) return isPrivateIPv4(mappedToIPv4(host.slice(7)));
+  return isPrivateIPv4(host);
+}
+
+/** Fold the tail of an ::ffff: IPv4-mapped address to a dotted quad. Accepts an
+ * already-dotted tail (a.b.c.d) or the parser's two-hextet hex form (7f00:1). */
+function mappedToIPv4(tail: string): string {
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(tail)) return tail;
+  const g = tail.split(":");
+  if (g.length !== 2) return "";
+  const hi = parseInt(g[0]!, 16), lo = parseInt(g[1]!, 16);
+  if (!Number.isFinite(hi) || !Number.isFinite(lo)) return "";
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
+/** IPv4 dotted-quad private/loopback classifier (also reused for ::ffff: maps). */
+function isPrivateIPv4(host: string): boolean {
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
   if (!m) return false;
   const a = +m[1]!, b = +m[2]!;
   return (
-    a === 127 ||                       // 127.0.0.0/8 loopback
-    a === 10 ||                        // 10.0.0.0/8
-    a === 0 ||                         // 0.0.0.0/8
-    (a === 192 && b === 168) ||        // 192.168.0.0/16
+    a === 127 ||                        // 127.0.0.0/8 loopback
+    a === 10 ||                         // 10.0.0.0/8
+    a === 0 ||                          // 0.0.0.0/8
+    (a === 100 && b >= 64 && b <= 127) ||// 100.64.0.0/10 CGNAT / Tailscale tailnet
+    (a === 192 && b === 168) ||         // 192.168.0.0/16
     (a === 172 && b >= 16 && b <= 31) ||// 172.16.0.0/12
-    (a === 169 && b === 254)           // 169.254.0.0/16 link-local
+    (a === 169 && b === 254)            // 169.254.0.0/16 link-local
   );
 }
 
@@ -84,8 +109,13 @@ export function isPrivateHost(url: string): boolean {
 // CDP's Fetch domain does not intercept WebSocket handshakes, so raw ws:// to a
 // private host falls back to Chrome's own Private Network Access (a timeout, not
 // a uniform block). Real port-scanners (and the :3001/:5900 probes) use HTTP.
-const PRIVATE_URL_PATTERNS = ["localhost", "127.", "0.0.0.0", "10.", "192.168.", "172.1", "172.2", "172.3", "169.254.", "[::1]"]
-  .flatMap((h) => ["http", "https"].map((s) => ({ urlPattern: `${s}://${h}*` })));
+// 100.6/7/8/9 + 100.1 coarsely cover the CGNAT range 100.64.0.0/10 (over-capture
+// gated by isPrivateHost, same as 172.1*); [fc/[fd cover IPv6 unique-local
+// fc00::/7; [::ffff: covers IPv4-mapped IPv6.
+const PRIVATE_URL_PATTERNS = [
+  "localhost", "127.", "0.0.0.0", "10.", "192.168.", "172.1", "172.2", "172.3",
+  "169.254.", "100.6", "100.7", "100.8", "100.9", "100.1", "[::1]", "[fc", "[fd", "[::ffff:",
+].flatMap((h) => ["http", "https"].map((s) => ({ urlPattern: `${s}://${h}*` })));
 
 export class Page {
   private rng = new Rng();

@@ -24,6 +24,13 @@ describe("isPrivateHost — private/loopback (must block)", () => {
     "http://169.254.1.1/",
     "http://[::1]:3000/",
     "wss://[::1]/",
+    "http://100.64.0.1/",           // 100.64.0.0/10 CGNAT — low edge
+    "http://100.106.123.122/",      // this box's own tailnet address
+    "http://100.127.255.255/",      // CGNAT — high edge
+    "http://[fc00::1]/",            // IPv6 unique-local (fc00::/7)
+    "http://[fd12:3456:789a::1]/",  // IPv6 unique-local (fd = fc00::/7)
+    "http://[::ffff:127.0.0.1]/",   // IPv4-mapped loopback
+    "http://[::ffff:192.168.1.10]/",// IPv4-mapped private LAN
   ];
   for (const u of priv) it(u, () => expect(isPrivateHost(u)).toBe(true));
 });
@@ -38,6 +45,11 @@ describe("isPrivateHost — public (must NOT block)", () => {
     "http://11.0.0.1/",
     "http://193.168.1.1/", // not 192.168
     "http://169.253.0.1/", // not link-local
+    "http://100.63.255.255/", // just below the 100.64/10 CGNAT range
+    "http://100.128.0.1/", // just above the 100.64/10 CGNAT range
+    "http://100.0.0.1/", // public 100/8, well below CGNAT
+    "http://[::ffff:8.8.8.8]/", // IPv4-mapped, but public
+    "http://[2606:4700:4700::1111]/", // public IPv6 (Cloudflare), not fc00::/7
     "https://localhostess.com/", // hostname merely starts with "localhost"
     "not a url",
   ];
