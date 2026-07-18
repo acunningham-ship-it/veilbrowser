@@ -284,6 +284,22 @@ export class Page {
     await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...common });
   }
 
+  /**
+   * Scroll the page by a pixel delta via a real mouse-wheel event dispatched at
+   * the current cursor position (positive dy scrolls down, positive dx right).
+   * Use it to reveal lazy-loaded / off-screen content before snapshot().
+   */
+  async scroll(dx: number, dy: number) {
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: this.mouse.x,
+      y: this.mouse.y,
+      deltaX: dx,
+      deltaY: dy,
+    });
+    await sleep(this.rng.range(80, 200)); // settle, like a human watching content load
+  }
+
   /** Type text into the focused element with human cadence. */
   async type(text: string) {
     for (const ch of text) {

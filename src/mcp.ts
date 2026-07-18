@@ -33,6 +33,18 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { ref: { type: "number" }, text: { type: "string" } }, required: ["ref", "text"] } },
   { name: "veil_type", description: "Type text into the currently focused element.",
     inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
+  { name: "veil_press", description: "Press a single named key on the focused element. Use 'Enter' to submit a search box or form (fill a field, then veil_press Enter). Supported: Enter, Tab, Escape, Backspace, ArrowDown, ArrowUp.",
+    inputSchema: { type: "object", properties: { key: { type: "string", enum: ["Enter", "Tab", "Escape", "Backspace", "ArrowDown", "ArrowUp"] } }, required: ["key"] } },
+  { name: "veil_scroll", description: "Scroll the page by a pixel delta via a real mouse-wheel event (positive dy scrolls down, positive dx scrolls right). Reveals lazy-loaded / off-screen content; re-run veil_snapshot after.",
+    inputSchema: { type: "object", properties: { dx: { type: "number", description: "horizontal pixels (default 0)" }, dy: { type: "number", description: "vertical pixels (positive = down)" } }, required: ["dy"] } },
+  { name: "veil_wait_for", description: "Poll a JS expression in the page until it is truthy, instead of a fixed sleep — e.g. \"document.querySelector('.results')\". Returns when the condition holds; errors on timeout.",
+    inputSchema: { type: "object", properties: { expression: { type: "string" }, timeout: { type: "number", description: "ms before giving up (default 10000)" }, poll: { type: "number", description: "ms between checks (default 100)" } }, required: ["expression"] } },
+  { name: "veil_click_at", description: "Trusted click at absolute viewport coordinates (x, y). Use when there is no snapshot ref to target — a canvas, map, or custom widget.",
+    inputSchema: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"] } },
+  { name: "veil_upload", description: "Attach local files to a file <input> (even a hidden one) without an OS file picker. Paths must be absolute. selector defaults to the first input[type=file]; pass a specific one if the page has several.",
+    inputSchema: { type: "object", properties: { paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, selector: { type: "string", description: "CSS selector for the file input (default input[type=\"file\"])" } }, required: ["paths"] } },
+  { name: "veil_upload_via_picker", description: "Attach files through a control that opens a file picker (SPAs like Gemini that create the <input> lazily on click). Pass the snapshot ref of the trigger element and absolute file paths.",
+    inputSchema: { type: "object", properties: { triggerRef: { type: "number" }, paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, timeout: { type: "number", description: "ms to wait for the file chooser (default 15000)" } }, required: ["triggerRef", "paths"] } },
   { name: "veil_screenshot", description: "Capture a PNG screenshot of the page (returned as an image for vision).",
     inputSchema: { type: "object", properties: {} } },
   { name: "veil_eval", description: "Evaluate a JS expression in the page and return the value.",
@@ -69,6 +81,24 @@ async function callTool(name: string, args: any): Promise<any> {
     case "veil_type":
       await p.type(args.text);
       return text(`typed ${args.text.length} chars`);
+    case "veil_press":
+      await p.press(args.key);
+      return text(`pressed ${args.key}`);
+    case "veil_scroll":
+      await p.scroll(args.dx ?? 0, args.dy ?? 0);
+      return text(`scrolled (${args.dx ?? 0}, ${args.dy ?? 0})`);
+    case "veil_wait_for":
+      await p.waitFor(args.expression, { timeout: args.timeout, poll: args.poll });
+      return text(`condition met: ${args.expression}`);
+    case "veil_click_at":
+      await p.clickAt(args.x, args.y);
+      return text(`clicked at (${args.x}, ${args.y})`);
+    case "veil_upload":
+      await p.uploadFile(args.paths, args.selector);
+      return text(`uploaded ${args.paths.length} file(s)`);
+    case "veil_upload_via_picker":
+      await p.uploadViaPicker(args.triggerRef, args.paths, { timeout: args.timeout });
+      return text(`uploaded ${args.paths.length} file(s) via picker`);
     case "veil_screenshot": {
       const png = await p.screenshot();
       return { content: [{ type: "image", data: png.toString("base64"), mimeType: "image/png" }] };
@@ -100,6 +130,10 @@ async function callTool(name: string, args: any): Promise<any> {
 }
 
 const text = (t: string) => ({ content: [{ type: "text", text: t }] });
+// A tool-execution failure. Per MCP spec this is a *successful* JSON-RPC
+// response carrying isError:true, so the model reads the message and self-
+// corrects — not a JSON-RPC error, which many clients treat as an opaque hard-fail.
+const errorResult = (msg: string) => ({ content: [{ type: "text", text: msg }], isError: true });
 
 // --- JSON-RPC stdio loop ---
 const send = (msg: any): void => {
@@ -120,8 +154,21 @@ async function handle(msg: any): Promise<void> {
     if (method === "notifications/initialized") return; // notification, no reply
     if (method === "tools/list") return send({ jsonrpc: "2.0", id, result: { tools: TOOLS } });
     if (method === "tools/call") {
-      const result = await callTool(params.name, params.arguments ?? {});
-      return send({ jsonrpc: "2.0", id, result });
+      const name = params?.name;
+      // Unknown tool is a genuine PROTOCOL error (bad method) -> JSON-RPC error.
+      if (!TOOLS.some((t) => t.name === name)) {
+        if (id !== undefined) send({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown tool: ${name}` } });
+        return;
+      }
+      // A tool that THROWS during execution (nav timeout, "No element with ref
+      // 5", upload path missing, ...) is not a protocol failure — return it as a
+      // successful result with isError:true so the agent can read it and retry.
+      try {
+        const result = await callTool(name, params.arguments ?? {});
+        return send({ jsonrpc: "2.0", id, result });
+      } catch (e: any) {
+        return send({ jsonrpc: "2.0", id, result: errorResult(e?.message ?? String(e)) });
+      }
     }
     if (id !== undefined) send({ jsonrpc: "2.0", id, error: { code: -32601, message: `method not found: ${method}` } });
   } catch (e: any) {
