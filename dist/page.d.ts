@@ -72,6 +72,10 @@ export declare class Page {
         maskWebgl?: boolean;
         blockPrivateNetwork?: boolean;
     }): Promise<void>;
+    /** Drop a dead child-frame session (its iframe unmounted or navigated). If it
+     *  was the active target, fall back to the main page and clear now-meaningless
+     *  refs so the next call errors cleanly instead of acting on a stale frame. */
+    private removeFrameSession;
     /** List discovered cross-origin child iframes (same-origin iframes don't need
      *  this — they're already visible to the main session's Accessibility tree). */
     frames(): Promise<Array<{

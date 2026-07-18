@@ -101,11 +101,33 @@ export class Page {
             waitForDebuggerOnStart: false,
             flatten: true,
         });
-        this.frameOff = this.cdp.on("Target.attachedToTarget", (p) => {
+        const offAttach = this.cdp.on("Target.attachedToTarget", (p) => {
             if (p.targetInfo?.type === "iframe") {
                 this.frameSessions.push({ sessionId: p.sessionId, url: p.targetInfo.url, targetId: p.targetInfo.targetId });
             }
         }, "*");
+        // Prune child sessions when their iframe unmounts or navigates away, so
+        // frames() never lists a dead frame and useFrame() can't retarget to a
+        // destroyed session. detachedFromTarget carries the sessionId; targetDestroyed
+        // only the targetId — handle both.
+        const offDetach = this.cdp.on("Target.detachedFromTarget", (p) => { if (p.sessionId)
+            this.removeFrameSession((f) => f.sessionId === p.sessionId); }, "*");
+        const offDestroyed = this.cdp.on("Target.targetDestroyed", (p) => { if (p.targetId)
+            this.removeFrameSession((f) => f.targetId === p.targetId); }, "*");
+        this.frameOff = () => { offAttach(); offDetach(); offDestroyed(); };
+    }
+    /** Drop a dead child-frame session (its iframe unmounted or navigated). If it
+     *  was the active target, fall back to the main page and clear now-meaningless
+     *  refs so the next call errors cleanly instead of acting on a stale frame. */
+    removeFrameSession(match) {
+        const i = this.frameSessions.findIndex(match);
+        if (i < 0)
+            return;
+        const [gone] = this.frameSessions.splice(i, 1);
+        if (gone && this.activeSessionId === gone.sessionId) {
+            this.activeSessionId = this.sessionId;
+            this.refs.clear();
+        }
     }
     /** List discovered cross-origin child iframes (same-origin iframes don't need
      *  this — they're already visible to the main session's Accessibility tree). */
@@ -175,11 +197,23 @@ export class Page {
     /** Navigate and wait for the load event. Always the main page, regardless of
      *  any active useFrame() — top-level navigation isn't a per-frame concept. */
     async goto(url, opts = {}) {
+        // A top-level nav invalidates every snapshot ref and returns us to the main
+        // page context: drop stale refs (a leftover ref would click wrong coords) and
+        // reset the active session so a prior useFrame() doesn't leak across the nav.
+        this.refs.clear();
+        this.activeSessionId = this.sessionId;
         const loaded = this.cdp.once("Page.loadEventFired", {
             sessionId: this.sessionId,
             timeout: opts.timeout ?? 30000,
         });
-        await this.cdp.send("Page.navigate", { url }, this.sessionId);
+        // Page.navigate resolves with { frameId, loaderId, errorText? }. On a DNS or
+        // connection failure Chrome STILL fires loadEventFired for its own error page,
+        // so the load event alone can't tell success from failure — errorText can.
+        const nav = await this.cdp.send("Page.navigate", { url }, this.sessionId);
+        if (nav?.errorText) {
+            loaded.catch(() => { }); // we're bailing; swallow the pending once() timeout rejection
+            throw new Error(`goto(${url}) failed: ${nav.errorText}`);
+        }
         await loaded;
         await sleep(this.rng.range(150, 400)); // settle, like a human reading
     }
@@ -439,11 +473,15 @@ export class Page {
      */
     async enableFedCm(opts = {}) {
         const autoSelect = opts.autoSelectFirst ?? true;
-        await this.send("FedCm.enable", { disableRejectionDelay: true });
+        // FedCM is a top-level-page flow: enable it (and every later FedCm.* command)
+        // on the MAIN session explicitly, matching the dialogShown listener below —
+        // otherwise a useFrame() before sign-in would point these at a child session
+        // and the RP's navigator.credentials.get() would hang unresolved.
+        await this.cdp.send("FedCm.enable", { disableRejectionDelay: true }, this.sessionId);
         // A prior dismissal drops the IdP into a cooldown where the dialog silently
         // won't reappear; clear it so the next trigger actually shows.
         try {
-            await this.send("FedCm.resetCooldown");
+            await this.cdp.send("FedCm.resetCooldown", {}, this.sessionId);
         }
         catch { }
         if (this.fedcmOff)
@@ -499,13 +537,15 @@ export class Page {
     async selectFedCmAccount(accountIndex = 0, dialogId = this.lastFedcmDialogId) {
         if (!dialogId)
             throw new Error("selectFedCmAccount: no FedCM dialog has appeared yet");
-        await this.send("FedCm.selectAccount", { dialogId, accountIndex });
+        // Target the main session explicitly (not activeSessionId): this also runs
+        // from the dialogShown auto-select handler, which can fire after a useFrame().
+        await this.cdp.send("FedCm.selectAccount", { dialogId, accountIndex }, this.sessionId);
     }
     /** Dismiss the current FedCM dialog (decline the sign-in). */
     async dismissFedCm(dialogId = this.lastFedcmDialogId) {
         if (!dialogId)
             return;
-        await this.send("FedCm.dismissDialog", { dialogId, triggerCooldown: false });
+        await this.cdp.send("FedCm.dismissDialog", { dialogId, triggerCooldown: false }, this.sessionId);
     }
     /** Stop intercepting FedCM. Call after a sign-in so a later navigation that
      *  probes FedCM isn't left hanging on us. */
@@ -515,7 +555,7 @@ export class Page {
         this.fedcmQueue = [];
         this.fedcmWaiters = [];
         try {
-            await this.send("FedCm.disable");
+            await this.cdp.send("FedCm.disable", {}, this.sessionId);
         }
         catch { }
     }
@@ -553,9 +593,14 @@ export class Page {
     async blockPrivateNetwork() {
         if (this.blockPrivateOff)
             return;
+        // Fetch is enabled on the MAIN session and its requestPaused events fire
+        // asynchronously — possibly after a useFrame() has repointed activeSessionId at
+        // a child. So every command here targets this.sessionId explicitly (not
+        // this.send, which follows activeSessionId): a continue/fail sent to the wrong
+        // session can't find the requestId, and the paused request would hang forever.
         // Learn the main frame so we can tell an agent nav from a page's own probe.
         try {
-            const { frameTree } = await this.send("Page.getFrameTree");
+            const { frameTree } = await this.cdp.send("Page.getFrameTree", {}, this.sessionId);
             this.mainFrameId = frameTree?.frame?.id;
             this.topPrivate = isPrivateHost(frameTree?.frame?.url ?? "");
         }
@@ -567,17 +612,17 @@ export class Page {
                 this.topPrivate = isPrivateHost(f.url ?? "");
             }
         }, this.sessionId);
-        await this.send("Fetch.enable", { patterns: PRIVATE_URL_PATTERNS });
+        await this.cdp.send("Fetch.enable", { patterns: PRIVATE_URL_PATTERNS }, this.sessionId);
         const offFetch = this.cdp.on("Fetch.requestPaused", (p) => {
             const url = p.request?.url ?? "";
             // Allow: agent-driven top-level nav, and a private page's own resources.
             // Block: any other private-host request from a public page (the scan).
             const isMainNav = p.resourceType === "Document" && p.frameId === this.mainFrameId;
             if (isPrivateHost(url) && !isMainNav && !this.topPrivate) {
-                this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "AccessDenied" }).catch(() => { });
+                this.cdp.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "AccessDenied" }, this.sessionId).catch(() => { });
             }
             else {
-                this.send("Fetch.continueRequest", { requestId: p.requestId }).catch(() => { });
+                this.cdp.send("Fetch.continueRequest", { requestId: p.requestId }, this.sessionId).catch(() => { });
             }
         }, this.sessionId);
         this.blockPrivateOff = () => { offNav(); offFetch(); };
