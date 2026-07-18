@@ -213,6 +213,13 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
   // Port 0 => Chrome picks a free port and writes it to DevToolsActivePort.
   const args = [
     `--remote-debugging-port=0`,
+    // Since Chrome 111 the DevTools WebSocket upgrade returns 403 unless the
+    // request's Origin is allow-listed. Bun's WS client omits Origin today so we
+    // connect, but a Bun/Chrome update that starts sending one would silently
+    // break every connection. Allow any origin on the local debug endpoint —
+    // Puppeteer and Playwright both do this; it affects only the loopback
+    // debugging socket and is never visible to a page.
+    `--remote-allow-origins=*`,
     `--user-data-dir=${userDataDir}`,
     `--window-size=${width},${height}`,
     `--window-position=${posX},${posY}`,
@@ -304,20 +311,40 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
 
 function waitForPort(portFile: string, child: ChildProcess): Promise<{ port: number }> {
   return new Promise((resolve, reject) => {
+    // Cap captured stderr at the last ~16KB. Without a bound Chrome's stderr
+    // accumulates in this closure string for the WHOLE session (the listener
+    // outlives the port wait), a slow memory leak. We only ever show the tail.
+    const CAP = 16 * 1024;
     let stderr = "";
-    child.stderr?.on("data", (d) => (stderr += d.toString()));
-    child.on("exit", (code) =>
-      reject(new Error(`Chrome exited early (code ${code}).\n${stderr.slice(-600)}`)),
-    );
+    const onData = (d: Buffer) => {
+      stderr += d.toString();
+      if (stderr.length > CAP) stderr = stderr.slice(-CAP);
+    };
+    const onExit = (code: number | null) =>
+      settle(() => reject(new Error(`Chrome exited early (code ${code}).\n${stderr.slice(-600)}`)));
+    // Remove BOTH listeners once resolved/rejected so they don't outlive the wait
+    // and keep growing `stderr` for the rest of the session.
+    let done = false;
+    const settle = (fn: () => void) => {
+      if (done) return;
+      done = true;
+      child.stderr?.removeListener("data", onData);
+      child.removeListener("exit", onExit);
+      fn();
+    };
+    child.stderr?.on("data", onData);
+    child.on("exit", onExit);
     const start = Date.now();
     const tick = () => {
+      if (done) return;
       if (existsSync(portFile)) {
         try {
           const port = parseInt(readFileSync(portFile, "utf8").split("\n")[0]!.trim(), 10);
-          if (port > 0) return resolve({ port });
+          if (port > 0) return settle(() => resolve({ port }));
         } catch {}
       }
-      if (Date.now() - start > 15000) return reject(new Error("Chrome never opened a debug port"));
+      if (Date.now() - start > 15000)
+        return settle(() => reject(new Error("Chrome never opened a debug port")));
       setTimeout(tick, 50);
     };
     tick();
