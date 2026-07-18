@@ -26,9 +26,6 @@ export function buildStealth(opts = {}) {
         : "";
     return String.raw `
 (() => {
-  if (window.__veil) return;
-  Object.defineProperty(window, '__veil', { value: true, enumerable: false });
-
   const patchGetter = (obj, prop, value) => {
     try { Object.defineProperty(obj, prop, { get: () => value, configurable: true, enumerable: true }); } catch (e) {}
   };

@@ -92,10 +92,17 @@ await browser.close();
    `Runtime.enable`** — that command is a primary CDP detection vector. `Runtime.evaluate`
    works without it.
 3. **Page patch (`stealth.ts`)** — injected via `addScriptToEvaluateOnNewDocument`
-   *before* any site code, on every frame: normalizes `webdriver`, `window.chrome`,
-   `plugins`, `languages`, `permissions.query`, WebGL vendor — and makes the patched
-   functions' `toString()` look native so the patch itself can't be detected. Kept
-   deliberately small; over-patching is its own fingerprint.
+   *before* any site code, on every frame. Every patch is **self-gating**: it fires
+   only when a value is genuinely anomalous (a stripped/headless env leaked
+   `webdriver === true`, 0 plugins, an empty `languages`, or a missing `window.chrome`),
+   and is a no-op on a healthy real Chrome. That's the whole default surface — a
+   `webdriver`/`window.chrome`/`plugins`/`languages` backfill, nothing more. It
+   deliberately does **not** touch `permissions.query`: a patched `permissions.query`
+   is itself a signature deep fingerprinters score as "stealth detected". WebGL-vendor
+   spoofing (and the native-looking `toString()` mask that hides it) is **opt-in** via
+   `maskWebgl` — off by default, used only to disguise SwiftShader on GPU-less hosts;
+   with a real GPU the authentic vendor is left untouched. Kept deliberately small;
+   over-patching is its own fingerprint.
 4. **UA / client hints (`page.ts`)** — strips the `HeadlessChrome` token from the UA
    *and* the `Sec-CH-UA` brand headers.
 5. **Human input (`human.ts`)** — seedable PRNG drives curved mouse paths and

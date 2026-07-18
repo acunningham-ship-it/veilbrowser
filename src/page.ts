@@ -65,16 +65,41 @@ export function isPrivateHost(url: string): boolean {
   host = host.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   if (host === "::1" || host === "0.0.0.0") return true;
+  // IPv6 unique-local (fc00::/7) — the v6 analog of RFC1918 LAN space. The
+  // first hextet is fc00–fdff (never abbreviated, so exactly 4 hex chars).
+  if (/^f[cd][0-9a-f]{2}:/.test(host)) return true;
+  // IPv4-mapped IPv6 (::ffff:a.b.c.d) — same IPv4 host wearing a v6 hat; a
+  // public page could reach ::ffff:127.0.0.1 to hit loopback. The URL parser
+  // normalizes the tail to two hex hextets (::ffff:7f00:1), so fold it back to
+  // a dotted quad and re-apply the IPv4 rules.
+  if (host.startsWith("::ffff:")) return isPrivateIPv4(mappedToIPv4(host.slice(7)));
+  return isPrivateIPv4(host);
+}
+
+/** Fold the tail of an ::ffff: IPv4-mapped address to a dotted quad. Accepts an
+ * already-dotted tail (a.b.c.d) or the parser's two-hextet hex form (7f00:1). */
+function mappedToIPv4(tail: string): string {
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(tail)) return tail;
+  const g = tail.split(":");
+  if (g.length !== 2) return "";
+  const hi = parseInt(g[0]!, 16), lo = parseInt(g[1]!, 16);
+  if (!Number.isFinite(hi) || !Number.isFinite(lo)) return "";
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
+/** IPv4 dotted-quad private/loopback classifier (also reused for ::ffff: maps). */
+function isPrivateIPv4(host: string): boolean {
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
   if (!m) return false;
   const a = +m[1]!, b = +m[2]!;
   return (
-    a === 127 ||                       // 127.0.0.0/8 loopback
-    a === 10 ||                        // 10.0.0.0/8
-    a === 0 ||                         // 0.0.0.0/8
-    (a === 192 && b === 168) ||        // 192.168.0.0/16
+    a === 127 ||                        // 127.0.0.0/8 loopback
+    a === 10 ||                         // 10.0.0.0/8
+    a === 0 ||                          // 0.0.0.0/8
+    (a === 100 && b >= 64 && b <= 127) ||// 100.64.0.0/10 CGNAT / Tailscale tailnet
+    (a === 192 && b === 168) ||         // 192.168.0.0/16
     (a === 172 && b >= 16 && b <= 31) ||// 172.16.0.0/12
-    (a === 169 && b === 254)           // 169.254.0.0/16 link-local
+    (a === 169 && b === 254)            // 169.254.0.0/16 link-local
   );
 }
 
@@ -84,8 +109,62 @@ export function isPrivateHost(url: string): boolean {
 // CDP's Fetch domain does not intercept WebSocket handshakes, so raw ws:// to a
 // private host falls back to Chrome's own Private Network Access (a timeout, not
 // a uniform block). Real port-scanners (and the :3001/:5900 probes) use HTTP.
-const PRIVATE_URL_PATTERNS = ["localhost", "127.", "0.0.0.0", "10.", "192.168.", "172.1", "172.2", "172.3", "169.254.", "[::1]"]
-  .flatMap((h) => ["http", "https"].map((s) => ({ urlPattern: `${s}://${h}*` })));
+// 100.6/7/8/9 + 100.1 coarsely cover the CGNAT range 100.64.0.0/10 (over-capture
+// gated by isPrivateHost, same as 172.1*); [fc/[fd cover IPv6 unique-local
+// fc00::/7; [::ffff: covers IPv4-mapped IPv6.
+const PRIVATE_URL_PATTERNS = [
+  "localhost", "127.", "0.0.0.0", "10.", "192.168.", "172.1", "172.2", "172.3",
+  "169.254.", "100.6", "100.7", "100.8", "100.9", "100.1", "[::1]", "[fc", "[fd", "[::ffff:",
+].flatMap((h) => ["http", "https"].map((s) => ({ urlPattern: `${s}://${h}*` })));
+
+/**
+ * US-layout physical-key descriptor for the printable symbol keys — the ones we
+ * can't derive from the character itself. A shifted symbol shares its base key's
+ * `code` and `windowsVirtualKeyCode` (one physical key makes both `2` and `@`),
+ * which is exactly what a real keyboard reports. Letters, digits, and Enter are
+ * handled programmatically in keyInfo().
+ */
+const SYMBOL_KEYS: Record<string, { code: string; vk: number }> = {
+  " ": { code: "Space", vk: 32 },
+  "`": { code: "Backquote", vk: 192 }, "~": { code: "Backquote", vk: 192 },
+  "-": { code: "Minus", vk: 189 }, "_": { code: "Minus", vk: 189 },
+  "=": { code: "Equal", vk: 187 }, "+": { code: "Equal", vk: 187 },
+  "[": { code: "BracketLeft", vk: 219 }, "{": { code: "BracketLeft", vk: 219 },
+  "]": { code: "BracketRight", vk: 221 }, "}": { code: "BracketRight", vk: 221 },
+  "\\": { code: "Backslash", vk: 220 }, "|": { code: "Backslash", vk: 220 },
+  ";": { code: "Semicolon", vk: 186 }, ":": { code: "Semicolon", vk: 186 },
+  "'": { code: "Quote", vk: 222 }, "\"": { code: "Quote", vk: 222 },
+  ",": { code: "Comma", vk: 188 }, "<": { code: "Comma", vk: 188 },
+  ".": { code: "Period", vk: 190 }, ">": { code: "Period", vk: 190 },
+  "/": { code: "Slash", vk: 191 }, "?": { code: "Slash", vk: 191 },
+  // Shifted digit row — code/vk of the underlying digit key.
+  "!": { code: "Digit1", vk: 49 }, "@": { code: "Digit2", vk: 50 },
+  "#": { code: "Digit3", vk: 51 }, "$": { code: "Digit4", vk: 52 },
+  "%": { code: "Digit5", vk: 53 }, "^": { code: "Digit6", vk: 54 },
+  "&": { code: "Digit7", vk: 55 }, "*": { code: "Digit8", vk: 56 },
+  "(": { code: "Digit9", vk: 57 }, ")": { code: "Digit0", vk: 48 },
+};
+
+/**
+ * Resolve one character to a well-formed keystroke: the DOM `key`, the physical
+ * `code`, the legacy `windowsVirtualKeyCode` (`vk`), and the `text` to commit.
+ * Filling these in is the whole point — a bare `text`-only key event leaves
+ * `KeyboardEvent.keyCode === 0` and `code === ""`, which breaks keydown-driven
+ * UIs and is a hard bot-tell on login forms. Letters, digits, Enter and the US
+ * symbol keys are covered; anything else (accented/CJK/emoji) degrades to a
+ * plain text commit, the way an IME delivers a composed character.
+ */
+export function keyInfo(ch: string): { key: string; code: string; vk: number; text: string } {
+  if (ch === "\n" || ch === "\r") return { key: "Enter", code: "Enter", vk: 13, text: "\r" };
+  if (/^[a-z]$/i.test(ch)) {
+    const upper = ch.toUpperCase();
+    return { key: ch, code: `Key${upper}`, vk: upper.charCodeAt(0), text: ch };
+  }
+  if (/^[0-9]$/.test(ch)) return { key: ch, code: `Digit${ch}`, vk: ch.charCodeAt(0), text: ch };
+  const sym = SYMBOL_KEYS[ch];
+  if (sym) return { key: ch, code: sym.code, vk: sym.vk, text: ch };
+  return { key: ch, code: "", vk: 0, text: ch };
+}
 
 export class Page {
   private rng = new Rng();
@@ -285,6 +364,26 @@ export class Page {
   }
 
   /**
+   * Dispatch one well-formed key: rawKeyDown, then a `char` event only if the
+   * key produces text, then keyUp (no text) — the exact shape press() relies on,
+   * always carrying key/code/windowsVirtualKeyCode/nativeVirtualKeyCode so the
+   * page never sees a `keyCode === 0` bot-tell. `modifiers` is a CDP bitfield
+   * (Alt 1, Ctrl 2, Meta 4, Shift 8) for shortcuts like Ctrl+A.
+   */
+  private async sendKey(opts: { key: string; code: string; vk: number; text?: string; modifiers?: number }) {
+    const base = {
+      key: opts.key,
+      code: opts.code,
+      windowsVirtualKeyCode: opts.vk,
+      nativeVirtualKeyCode: opts.vk,
+      ...(opts.modifiers ? { modifiers: opts.modifiers } : {}),
+    };
+    await this.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base, ...(opts.text ? { text: opts.text } : {}) });
+    if (opts.text) await this.send("Input.dispatchKeyEvent", { type: "char", ...base, text: opts.text });
+    await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+  }
+
+  /**
    * Scroll the page by a pixel delta via a real mouse-wheel event dispatched at
    * the current cursor position (positive dy scrolls down, positive dx right).
    * Use it to reveal lazy-loaded / off-screen content before snapshot().
@@ -300,19 +399,31 @@ export class Page {
     await sleep(this.rng.range(80, 200)); // settle, like a human watching content load
   }
 
-  /** Type text into the focused element with human cadence. */
+  /** Type text into the focused element with human cadence. Each character is
+   *  dispatched as a real keydown/char/keyUp with the right key, code, and
+   *  virtual-key code (see keyInfo) — the bare text-only events this used to send
+   *  read as keyCode===0 and broke keydown-driven login forms. */
   async type(text: string) {
     for (const ch of text) {
-      await this.send("Input.dispatchKeyEvent", { type: "keyDown", text: ch });
-      await this.send("Input.dispatchKeyEvent", { type: "keyUp", text: ch });
+      const k = keyInfo(ch);
+      await this.sendKey({ key: k.key, code: k.code, vk: k.vk, text: k.text });
       await sleep(keyDelay(this.rng, ch));
     }
   }
 
-  /** Click a field then type into it. */
+  /** Clear the focused field: select-all (Ctrl+A) then Delete, via the Input
+   *  domain like the rest of our key dispatch. Playwright's fill() clears first;
+   *  without this, filling a pre-populated input yields "oldnewvalue". */
+  private async clearField() {
+    await this.sendKey({ key: "a", code: "KeyA", vk: 65, modifiers: 2 }); // Ctrl+A → select all
+    await this.sendKey({ key: "Delete", code: "Delete", vk: 46 });        // delete the selection
+  }
+
+  /** Click a field, clear any existing value, then type into it. */
   async fill(ref: number, text: string) {
     await this.click(ref);
     await sleep(this.rng.range(60, 160));
+    await this.clearField();
     await this.type(text);
   }
 
@@ -393,10 +504,7 @@ export class Page {
     };
     const k = KEYS[key];
     if (!k) throw new Error(`press: unsupported key ${key}`);
-    const base = { key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk };
-    await this.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base, ...(k.text ? { text: k.text } : {}) });
-    if (k.text) await this.send("Input.dispatchKeyEvent", { type: "char", ...base, text: k.text });
-    await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+    await this.sendKey({ key, code: k.code, vk: k.vk, text: k.text });
   }
 
   // --- FedCM: drive federated sign-in ("Sign in with Google" one-tap, etc.) ---
