@@ -2,6 +2,8 @@
 
 **A stealth automation runtime for AI agents. Drives real Chrome over raw CDP — no Playwright, no Puppeteer, no WebDriver, zero runtime dependencies.**
 
+[![npm](https://img.shields.io/npm/v/@achamm/veilbrowser?color=cb3837&logo=npm)](https://www.npmjs.com/package/@achamm/veilbrowser) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg) ![TypeScript native](https://img.shields.io/badge/TypeScript-native-3178c6.svg?logo=typescript&logoColor=white)
+
 ![Veil passing bot.sannysoft.com and Cloudflare's challenge](assets/demo.gif)
 
 *Veil driving real Chrome: bot.sannysoft.com all-green, then straight through Cloudflare's JS challenge — no patches, no plugins.*
