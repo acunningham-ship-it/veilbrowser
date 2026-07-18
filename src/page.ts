@@ -92,6 +92,18 @@ export class Page {
   private mouse: Point = { x: 100, y: 100 };
   private refs = new Map<number, { backendNodeId: number; center: Point }>();
   private closed = false;
+  // Cross-origin iframe support: CDP site-isolates a cross-origin child frame into
+  // its own renderer target ("OOPIF"), invisible to Accessibility/Runtime/Input
+  // commands sent on the main page's session — the #1 wall a drag-and-drop page
+  // builder (GHL, Webflow, etc.) hits, since the whole canvas is one child iframe.
+  // Target.setAutoAttach (scoped to this page's own session) discovers those child
+  // targets and hands us a session for each; `activeSessionId` is a single "which
+  // session do commands go to" pointer that every existing method already goes
+  // through via send(), so useFrame() retargets snapshot/click/fill/eval/type for
+  // free without duplicating each method.
+  private activeSessionId: string;
+  private frameSessions: Array<{ sessionId: string; url: string; targetId: string }> = [];
+  private frameOff?: () => void;
   // FedCM interception state (see enableFedCm).
   private fedcmOff?: () => void;
   private fedcmQueue: FedCmDialog[] = [];
@@ -106,7 +118,9 @@ export class Page {
     private cdp: CDP,
     public readonly sessionId: string,
     private targetId?: string,
-  ) {}
+  ) {
+    this.activeSessionId = sessionId;
+  }
 
   /** Enable the domains we use and arm stealth injection on every document. */
   async init(opts: { maskWebgl?: boolean; blockPrivateNetwork?: boolean } = {}) {
@@ -120,6 +134,43 @@ export class Page {
     const source = buildStealth({ maskWebgl: opts.maskWebgl ?? false });
     await this.send("Page.addScriptToEvaluateOnNewDocument", { source });
     if (opts.blockPrivateNetwork) await this.blockPrivateNetwork();
+    // Auto-attach to cross-origin child iframes of THIS page (scoped by sessionId
+    // on the command envelope, same as every other domain-enable here) so their
+    // Accessibility/Runtime/Input traffic becomes reachable via useFrame().
+    await this.send("Target.setAutoAttach", {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+    });
+    this.frameOff = this.cdp.on(
+      "Target.attachedToTarget",
+      (p: any) => {
+        if (p.targetInfo?.type === "iframe") {
+          this.frameSessions.push({ sessionId: p.sessionId, url: p.targetInfo.url, targetId: p.targetInfo.targetId });
+        }
+      },
+      "*", // the event's own sessionId varies by Chrome version; match any and filter by type
+    );
+  }
+
+  /** List discovered cross-origin child iframes (same-origin iframes don't need
+   *  this — they're already visible to the main session's Accessibility tree). */
+  async frames(): Promise<Array<{ index: number; url: string }>> {
+    return this.frameSessions.map((f, i) => ({ index: i + 1, url: f.url }));
+  }
+
+  /** Point every subsequent snapshot/click/fill/type/eval call at a child iframe
+   *  (index from frames()), or back at the main page with null/undefined. Clears
+   *  refs — a snapshot ref is only ever valid for the frame it was taken in. */
+  useFrame(index?: number | null) {
+    this.refs.clear();
+    if (index == null) {
+      this.activeSessionId = this.sessionId;
+      return;
+    }
+    const f = this.frameSessions[index - 1];
+    if (!f) throw new Error(`useFrame: no frame at index ${index} — call frames() first (found ${this.frameSessions.length})`);
+    this.activeSessionId = f.sessionId;
   }
 
   /**
@@ -164,17 +215,20 @@ export class Page {
     });
   }
 
+  /** Commands go to whichever session is "active" — the main page by default,
+   *  or a child iframe's own session after useFrame(). */
   private send<T = any>(method: string, params: Record<string, any> = {}) {
-    return this.cdp.send<T>(method, params, this.sessionId);
+    return this.cdp.send<T>(method, params, this.activeSessionId);
   }
 
-  /** Navigate and wait for the load event. */
+  /** Navigate and wait for the load event. Always the main page, regardless of
+   *  any active useFrame() — top-level navigation isn't a per-frame concept. */
   async goto(url: string, opts: { timeout?: number } = {}) {
     const loaded = this.cdp.once("Page.loadEventFired", {
       sessionId: this.sessionId,
       timeout: opts.timeout ?? 30000,
     });
-    await this.send("Page.navigate", { url });
+    await this.cdp.send("Page.navigate", { url }, this.sessionId);
     await loaded;
     await sleep(this.rng.range(150, 400)); // settle, like a human reading
   }
@@ -242,15 +296,18 @@ export class Page {
     }
   }
 
-  /** Move the cursor along a human curve to a target point. */
-  private async moveTo(target: Point) {
+  /** Move the cursor along a human curve to a target point. `buttons` mirrors
+   *  CDP's bitmask (1 = left button down) — pass 1 while dragging so the move
+   *  itself carries mousemove-with-button-held events a drag-and-drop library
+   *  listens for, not plain hover moves. */
+  private async moveTo(target: Point, buttons: 0 | 1 = 0) {
     const path = mousePath(this.mouse, target, this.rng);
     for (const p of path) {
       await this.send("Input.dispatchMouseEvent", {
         type: "mouseMoved",
         x: p.x,
         y: p.y,
-        buttons: 0,
+        buttons,
       });
       await sleep(moveDelay(this.rng));
     }
@@ -267,6 +324,41 @@ export class Page {
     await this.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...common });
     await sleep(this.rng.range(40, 110)); // press dwell
     await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...common });
+  }
+
+  /**
+   * Drag from one point to another. Many drag-drop site/page builders (GHL,
+   * Webflow, most "drag a card onto a canvas" UIs) use pointer-based DnD
+   * libraries that key off real mousedown -> mousemove(button held) -> mouseup,
+   * not the legacy HTML5 dragstart/drop events, or any semantic role an a11y
+   * tree would expose — click() alone can't reach these; this can. Both ends
+   * are viewport coordinates, since the draggable card AND its drop target are
+   * usually plain divs with no accessible ref of their own — read them off a
+   * veil_screenshot.
+   */
+  private async dragCore(fromX: number, fromY: number, toX: number, toY: number) {
+    await this.moveTo({ x: fromX, y: fromY });
+    await sleep(this.rng.range(30, 90));
+    const downCommon = { x: fromX, y: fromY, button: "left" as const, clickCount: 1 };
+    await this.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...downCommon });
+    await sleep(this.rng.range(40, 100)); // dwell so the library's own drag-start threshold fires
+    await this.moveTo({ x: toX, y: toY }, 1); // move WITH the button held — this is what a DnD listener sees as "dragging"
+    await sleep(this.rng.range(40, 100));
+    const upCommon = { x: toX, y: toY, button: "left" as const, clickCount: 1 };
+    await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...upCommon });
+  }
+
+  /** Drag an element by snapshot ref to an absolute viewport point. */
+  async dragRefTo(ref: number, toX: number, toY: number) {
+    const from = this.refs.get(ref);
+    if (!from) throw new Error(`No element with ref ${ref}. Call snapshot() first.`);
+    await this.dragCore(from.center.x, from.center.y, toX, toY);
+  }
+
+  /** Drag between two absolute viewport points — for when neither the source
+   *  card nor the drop target has a resolvable snapshot ref. */
+  async dragAt(fromX: number, fromY: number, toX: number, toY: number) {
+    await this.dragCore(fromX, fromY, toX, toY);
   }
 
   /** Bring this page's target to the foreground — CDP Input only routes to the active target. */
@@ -300,11 +392,13 @@ export class Page {
     await this.type(text);
   }
 
-  /** Capture a PNG screenshot (Buffer) — feed to a vision model. */
+  /** Capture a PNG screenshot (Buffer) — feed to a vision model. Always the main
+   *  page's viewport (Page.captureScreenshot isn't a per-frame concept), regardless
+   *  of any active useFrame(). */
   async screenshot(opts: { fullPage?: boolean } = {}): Promise<Buffer> {
     const params: any = { format: "png" };
     if (opts.fullPage) params.captureBeyondViewport = true;
-    const { data } = await this.send("Page.captureScreenshot", params);
+    const { data } = await this.cdp.send("Page.captureScreenshot", params, this.sessionId);
     return Buffer.from(data, "base64");
   }
 
@@ -556,6 +650,8 @@ export class Page {
     if (this.closed) return;
     this.closed = true;
     this.refs.clear();
+    this.frameOff?.();
+    this.frameSessions = [];
     if (this.targetId) {
       try {
         // Target.closeTarget closes the page/target and frees its resources.

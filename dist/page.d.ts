@@ -56,6 +56,9 @@ export declare class Page {
     private mouse;
     private refs;
     private closed;
+    private activeSessionId;
+    private frameSessions;
+    private frameOff?;
     private fedcmOff?;
     private fedcmQueue;
     private fedcmWaiters;
@@ -69,6 +72,16 @@ export declare class Page {
         maskWebgl?: boolean;
         blockPrivateNetwork?: boolean;
     }): Promise<void>;
+    /** List discovered cross-origin child iframes (same-origin iframes don't need
+     *  this — they're already visible to the main session's Accessibility tree). */
+    frames(): Promise<Array<{
+        index: number;
+        url: string;
+    }>>;
+    /** Point every subsequent snapshot/click/fill/type/eval call at a child iframe
+     *  (index from frames()), or back at the main page with null/undefined. Clears
+     *  refs — a snapshot ref is only ever valid for the frame it was taken in. */
+    useFrame(index?: number | null): void;
     /**
      * Inject cookies before navigating — e.g. a logged-in session transferred
      * from another browser. Each cookie is a CDP CookieParam ({name, value,
@@ -83,8 +96,11 @@ export declare class Page {
      * no-op for headful Chrome, whose UA is already clean.
      */
     private normalizeUserAgent;
+    /** Commands go to whichever session is "active" — the main page by default,
+     *  or a child iframe's own session after useFrame(). */
     private send;
-    /** Navigate and wait for the load event. */
+    /** Navigate and wait for the load event. Always the main page, regardless of
+     *  any active useFrame() — top-level navigation isn't a per-frame concept. */
     goto(url: string, opts?: {
         timeout?: number;
     }): Promise<void>;
@@ -94,10 +110,29 @@ export declare class Page {
     /** Build the numbered element index from the accessibility tree. */
     snapshot(): Promise<Snapshot>;
     private boxCenter;
-    /** Move the cursor along a human curve to a target point. */
+    /** Move the cursor along a human curve to a target point. `buttons` mirrors
+     *  CDP's bitmask (1 = left button down) — pass 1 while dragging so the move
+     *  itself carries mousemove-with-button-held events a drag-and-drop library
+     *  listens for, not plain hover moves. */
     private moveTo;
     /** Click an element by its snapshot ref. */
     click(ref: number): Promise<void>;
+    /**
+     * Drag from one point to another. Many drag-drop site/page builders (GHL,
+     * Webflow, most "drag a card onto a canvas" UIs) use pointer-based DnD
+     * libraries that key off real mousedown -> mousemove(button held) -> mouseup,
+     * not the legacy HTML5 dragstart/drop events, or any semantic role an a11y
+     * tree would expose — click() alone can't reach these; this can. Both ends
+     * are viewport coordinates, since the draggable card AND its drop target are
+     * usually plain divs with no accessible ref of their own — read them off a
+     * veil_screenshot.
+     */
+    private dragCore;
+    /** Drag an element by snapshot ref to an absolute viewport point. */
+    dragRefTo(ref: number, toX: number, toY: number): Promise<void>;
+    /** Drag between two absolute viewport points — for when neither the source
+     *  card nor the drop target has a resolvable snapshot ref. */
+    dragAt(fromX: number, fromY: number, toX: number, toY: number): Promise<void>;
     /** Bring this page's target to the foreground — CDP Input only routes to the active target. */
     bringToFront(): Promise<void>;
     /** Trusted click at absolute viewport coords (when you can't resolve a snapshot ref). */
@@ -106,7 +141,9 @@ export declare class Page {
     type(text: string): Promise<void>;
     /** Click a field then type into it. */
     fill(ref: number, text: string): Promise<void>;
-    /** Capture a PNG screenshot (Buffer) — feed to a vision model. */
+    /** Capture a PNG screenshot (Buffer) — feed to a vision model. Always the main
+     *  page's viewport (Page.captureScreenshot isn't a per-frame concept), regardless
+     *  of any active useFrame(). */
     screenshot(opts?: {
         fullPage?: boolean;
     }): Promise<Buffer>;
