@@ -171,6 +171,18 @@ export class Page {
   private mouse: Point = { x: 100, y: 100 };
   private refs = new Map<number, { backendNodeId: number; center: Point }>();
   private closed = false;
+  // Cross-origin iframe support: CDP site-isolates a cross-origin child frame into
+  // its own renderer target ("OOPIF"), invisible to Accessibility/Runtime/Input
+  // commands sent on the main page's session — the #1 wall a drag-and-drop page
+  // builder (GHL, Webflow, etc.) hits, since the whole canvas is one child iframe.
+  // Target.setAutoAttach (scoped to this page's own session) discovers those child
+  // targets and hands us a session for each; `activeSessionId` is a single "which
+  // session do commands go to" pointer that every existing method already goes
+  // through via send(), so useFrame() retargets snapshot/click/fill/eval/type for
+  // free without duplicating each method.
+  private activeSessionId: string;
+  private frameSessions: Array<{ sessionId: string; url: string; targetId: string }> = [];
+  private frameOff?: () => void;
   // FedCM interception state (see enableFedCm).
   private fedcmOff?: () => void;
   private fedcmQueue: FedCmDialog[] = [];
@@ -185,7 +197,9 @@ export class Page {
     private cdp: CDP,
     public readonly sessionId: string,
     private targetId?: string,
-  ) {}
+  ) {
+    this.activeSessionId = sessionId;
+  }
 
   /** Enable the domains we use and arm stealth injection on every document. */
   async init(opts: { maskWebgl?: boolean; blockPrivateNetwork?: boolean } = {}) {
@@ -199,6 +213,71 @@ export class Page {
     const source = buildStealth({ maskWebgl: opts.maskWebgl ?? false });
     await this.send("Page.addScriptToEvaluateOnNewDocument", { source });
     if (opts.blockPrivateNetwork) await this.blockPrivateNetwork();
+    // Auto-attach to cross-origin child iframes of THIS page (scoped by sessionId
+    // on the command envelope, same as every other domain-enable here) so their
+    // Accessibility/Runtime/Input traffic becomes reachable via useFrame().
+    await this.send("Target.setAutoAttach", {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+    });
+    const offAttach = this.cdp.on(
+      "Target.attachedToTarget",
+      (p: any) => {
+        if (p.targetInfo?.type === "iframe") {
+          this.frameSessions.push({ sessionId: p.sessionId, url: p.targetInfo.url, targetId: p.targetInfo.targetId });
+        }
+      },
+      "*", // the event's own sessionId varies by Chrome version; match any and filter by type
+    );
+    // Prune child sessions when their iframe unmounts or navigates away, so
+    // frames() never lists a dead frame and useFrame() can't retarget to a
+    // destroyed session. detachedFromTarget carries the sessionId; targetDestroyed
+    // only the targetId — handle both.
+    const offDetach = this.cdp.on(
+      "Target.detachedFromTarget",
+      (p: any) => { if (p.sessionId) this.removeFrameSession((f) => f.sessionId === p.sessionId); },
+      "*",
+    );
+    const offDestroyed = this.cdp.on(
+      "Target.targetDestroyed",
+      (p: any) => { if (p.targetId) this.removeFrameSession((f) => f.targetId === p.targetId); },
+      "*",
+    );
+    this.frameOff = () => { offAttach(); offDetach(); offDestroyed(); };
+  }
+
+  /** Drop a dead child-frame session (its iframe unmounted or navigated). If it
+   *  was the active target, fall back to the main page and clear now-meaningless
+   *  refs so the next call errors cleanly instead of acting on a stale frame. */
+  private removeFrameSession(match: (f: { sessionId: string; targetId: string }) => boolean) {
+    const i = this.frameSessions.findIndex(match);
+    if (i < 0) return;
+    const [gone] = this.frameSessions.splice(i, 1);
+    if (gone && this.activeSessionId === gone.sessionId) {
+      this.activeSessionId = this.sessionId;
+      this.refs.clear();
+    }
+  }
+
+  /** List discovered cross-origin child iframes (same-origin iframes don't need
+   *  this — they're already visible to the main session's Accessibility tree). */
+  async frames(): Promise<Array<{ index: number; url: string }>> {
+    return this.frameSessions.map((f, i) => ({ index: i + 1, url: f.url }));
+  }
+
+  /** Point every subsequent snapshot/click/fill/type/eval call at a child iframe
+   *  (index from frames()), or back at the main page with null/undefined. Clears
+   *  refs — a snapshot ref is only ever valid for the frame it was taken in. */
+  useFrame(index?: number | null) {
+    this.refs.clear();
+    if (index == null) {
+      this.activeSessionId = this.sessionId;
+      return;
+    }
+    const f = this.frameSessions[index - 1];
+    if (!f) throw new Error(`useFrame: no frame at index ${index} — call frames() first (found ${this.frameSessions.length})`);
+    this.activeSessionId = f.sessionId;
   }
 
   /**
@@ -243,17 +322,32 @@ export class Page {
     });
   }
 
+  /** Commands go to whichever session is "active" — the main page by default,
+   *  or a child iframe's own session after useFrame(). */
   private send<T = any>(method: string, params: Record<string, any> = {}) {
-    return this.cdp.send<T>(method, params, this.sessionId);
+    return this.cdp.send<T>(method, params, this.activeSessionId);
   }
 
-  /** Navigate and wait for the load event. */
+  /** Navigate and wait for the load event. Always the main page, regardless of
+   *  any active useFrame() — top-level navigation isn't a per-frame concept. */
   async goto(url: string, opts: { timeout?: number } = {}) {
+    // A top-level nav invalidates every snapshot ref and returns us to the main
+    // page context: drop stale refs (a leftover ref would click wrong coords) and
+    // reset the active session so a prior useFrame() doesn't leak across the nav.
+    this.refs.clear();
+    this.activeSessionId = this.sessionId;
     const loaded = this.cdp.once("Page.loadEventFired", {
       sessionId: this.sessionId,
       timeout: opts.timeout ?? 30000,
     });
-    await this.send("Page.navigate", { url });
+    // Page.navigate resolves with { frameId, loaderId, errorText? }. On a DNS or
+    // connection failure Chrome STILL fires loadEventFired for its own error page,
+    // so the load event alone can't tell success from failure — errorText can.
+    const nav = await this.cdp.send<{ errorText?: string }>("Page.navigate", { url }, this.sessionId);
+    if (nav?.errorText) {
+      loaded.catch(() => {}); // we're bailing; swallow the pending once() timeout rejection
+      throw new Error(`goto(${url}) failed: ${nav.errorText}`);
+    }
     await loaded;
     await sleep(this.rng.range(150, 400)); // settle, like a human reading
   }
@@ -321,15 +415,18 @@ export class Page {
     }
   }
 
-  /** Move the cursor along a human curve to a target point. */
-  private async moveTo(target: Point) {
+  /** Move the cursor along a human curve to a target point. `buttons` mirrors
+   *  CDP's bitmask (1 = left button down) — pass 1 while dragging so the move
+   *  itself carries mousemove-with-button-held events a drag-and-drop library
+   *  listens for, not plain hover moves. */
+  private async moveTo(target: Point, buttons: 0 | 1 = 0) {
     const path = mousePath(this.mouse, target, this.rng);
     for (const p of path) {
       await this.send("Input.dispatchMouseEvent", {
         type: "mouseMoved",
         x: p.x,
         y: p.y,
-        buttons: 0,
+        buttons,
       });
       await sleep(moveDelay(this.rng));
     }
@@ -346,6 +443,41 @@ export class Page {
     await this.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...common });
     await sleep(this.rng.range(40, 110)); // press dwell
     await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...common });
+  }
+
+  /**
+   * Drag from one point to another. Many drag-drop site/page builders (GHL,
+   * Webflow, most "drag a card onto a canvas" UIs) use pointer-based DnD
+   * libraries that key off real mousedown -> mousemove(button held) -> mouseup,
+   * not the legacy HTML5 dragstart/drop events, or any semantic role an a11y
+   * tree would expose — click() alone can't reach these; this can. Both ends
+   * are viewport coordinates, since the draggable card AND its drop target are
+   * usually plain divs with no accessible ref of their own — read them off a
+   * veil_screenshot.
+   */
+  private async dragCore(fromX: number, fromY: number, toX: number, toY: number) {
+    await this.moveTo({ x: fromX, y: fromY });
+    await sleep(this.rng.range(30, 90));
+    const downCommon = { x: fromX, y: fromY, button: "left" as const, clickCount: 1 };
+    await this.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...downCommon });
+    await sleep(this.rng.range(40, 100)); // dwell so the library's own drag-start threshold fires
+    await this.moveTo({ x: toX, y: toY }, 1); // move WITH the button held — this is what a DnD listener sees as "dragging"
+    await sleep(this.rng.range(40, 100));
+    const upCommon = { x: toX, y: toY, button: "left" as const, clickCount: 1 };
+    await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...upCommon });
+  }
+
+  /** Drag an element by snapshot ref to an absolute viewport point. */
+  async dragRefTo(ref: number, toX: number, toY: number) {
+    const from = this.refs.get(ref);
+    if (!from) throw new Error(`No element with ref ${ref}. Call snapshot() first.`);
+    await this.dragCore(from.center.x, from.center.y, toX, toY);
+  }
+
+  /** Drag between two absolute viewport points — for when neither the source
+   *  card nor the drop target has a resolvable snapshot ref. */
+  async dragAt(fromX: number, fromY: number, toX: number, toY: number) {
+    await this.dragCore(fromX, fromY, toX, toY);
   }
 
   /** Bring this page's target to the foreground — CDP Input only routes to the active target. */
@@ -427,11 +559,13 @@ export class Page {
     await this.type(text);
   }
 
-  /** Capture a PNG screenshot (Buffer) — feed to a vision model. */
+  /** Capture a PNG screenshot (Buffer) — feed to a vision model. Always the main
+   *  page's viewport (Page.captureScreenshot isn't a per-frame concept), regardless
+   *  of any active useFrame(). */
   async screenshot(opts: { fullPage?: boolean } = {}): Promise<Buffer> {
     const params: any = { format: "png" };
     if (opts.fullPage) params.captureBeyondViewport = true;
-    const { data } = await this.send("Page.captureScreenshot", params);
+    const { data } = await this.cdp.send("Page.captureScreenshot", params, this.sessionId);
     return Buffer.from(data, "base64");
   }
 
@@ -527,10 +661,14 @@ export class Page {
    */
   async enableFedCm(opts: { autoSelectFirst?: boolean } = {}) {
     const autoSelect = opts.autoSelectFirst ?? true;
-    await this.send("FedCm.enable", { disableRejectionDelay: true });
+    // FedCM is a top-level-page flow: enable it (and every later FedCm.* command)
+    // on the MAIN session explicitly, matching the dialogShown listener below —
+    // otherwise a useFrame() before sign-in would point these at a child session
+    // and the RP's navigator.credentials.get() would hang unresolved.
+    await this.cdp.send("FedCm.enable", { disableRejectionDelay: true }, this.sessionId);
     // A prior dismissal drops the IdP into a cooldown where the dialog silently
     // won't reappear; clear it so the next trigger actually shows.
-    try { await this.send("FedCm.resetCooldown"); } catch {}
+    try { await this.cdp.send("FedCm.resetCooldown", {}, this.sessionId); } catch {}
     if (this.fedcmOff) return;
     this.fedcmOff = this.cdp.on(
       "FedCm.dialogShown",
@@ -584,13 +722,15 @@ export class Page {
   /** Pick an account in the current FedCM dialog (index into dialog.accounts). */
   async selectFedCmAccount(accountIndex = 0, dialogId = this.lastFedcmDialogId) {
     if (!dialogId) throw new Error("selectFedCmAccount: no FedCM dialog has appeared yet");
-    await this.send("FedCm.selectAccount", { dialogId, accountIndex });
+    // Target the main session explicitly (not activeSessionId): this also runs
+    // from the dialogShown auto-select handler, which can fire after a useFrame().
+    await this.cdp.send("FedCm.selectAccount", { dialogId, accountIndex }, this.sessionId);
   }
 
   /** Dismiss the current FedCM dialog (decline the sign-in). */
   async dismissFedCm(dialogId = this.lastFedcmDialogId) {
     if (!dialogId) return;
-    await this.send("FedCm.dismissDialog", { dialogId, triggerCooldown: false });
+    await this.cdp.send("FedCm.dismissDialog", { dialogId, triggerCooldown: false }, this.sessionId);
   }
 
   /** Stop intercepting FedCM. Call after a sign-in so a later navigation that
@@ -600,7 +740,7 @@ export class Page {
     this.fedcmOff = undefined;
     this.fedcmQueue = [];
     this.fedcmWaiters = [];
-    try { await this.send("FedCm.disable"); } catch {}
+    try { await this.cdp.send("FedCm.disable", {}, this.sessionId); } catch {}
   }
 
   /**
@@ -635,9 +775,14 @@ export class Page {
    */
   async blockPrivateNetwork() {
     if (this.blockPrivateOff) return;
+    // Fetch is enabled on the MAIN session and its requestPaused events fire
+    // asynchronously — possibly after a useFrame() has repointed activeSessionId at
+    // a child. So every command here targets this.sessionId explicitly (not
+    // this.send, which follows activeSessionId): a continue/fail sent to the wrong
+    // session can't find the requestId, and the paused request would hang forever.
     // Learn the main frame so we can tell an agent nav from a page's own probe.
     try {
-      const { frameTree } = await this.send("Page.getFrameTree");
+      const { frameTree } = await this.cdp.send("Page.getFrameTree", {}, this.sessionId);
       this.mainFrameId = frameTree?.frame?.id;
       this.topPrivate = isPrivateHost(frameTree?.frame?.url ?? "");
     } catch {}
@@ -649,7 +794,7 @@ export class Page {
       },
       this.sessionId,
     );
-    await this.send("Fetch.enable", { patterns: PRIVATE_URL_PATTERNS });
+    await this.cdp.send("Fetch.enable", { patterns: PRIVATE_URL_PATTERNS }, this.sessionId);
     const offFetch = this.cdp.on(
       "Fetch.requestPaused",
       (p: any) => {
@@ -658,9 +803,9 @@ export class Page {
         // Block: any other private-host request from a public page (the scan).
         const isMainNav = p.resourceType === "Document" && p.frameId === this.mainFrameId;
         if (isPrivateHost(url) && !isMainNav && !this.topPrivate) {
-          this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "AccessDenied" }).catch(() => {});
+          this.cdp.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "AccessDenied" }, this.sessionId).catch(() => {});
         } else {
-          this.send("Fetch.continueRequest", { requestId: p.requestId }).catch(() => {});
+          this.cdp.send("Fetch.continueRequest", { requestId: p.requestId }, this.sessionId).catch(() => {});
         }
       },
       this.sessionId,
@@ -680,6 +825,8 @@ export class Page {
     if (this.closed) return;
     this.closed = true;
     this.refs.clear();
+    this.frameOff?.();
+    this.frameSessions = [];
     if (this.targetId) {
       try {
         // Target.closeTarget closes the page/target and frees its resources.
