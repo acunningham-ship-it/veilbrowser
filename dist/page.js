@@ -25,6 +25,33 @@ export function isPrivateHost(url) {
         return true;
     if (host === "::1" || host === "0.0.0.0")
         return true;
+    // IPv6 unique-local (fc00::/7) — the v6 analog of RFC1918 LAN space. The
+    // first hextet is fc00–fdff (never abbreviated, so exactly 4 hex chars).
+    if (/^f[cd][0-9a-f]{2}:/.test(host))
+        return true;
+    // IPv4-mapped IPv6 (::ffff:a.b.c.d) — same IPv4 host wearing a v6 hat; a
+    // public page could reach ::ffff:127.0.0.1 to hit loopback. The URL parser
+    // normalizes the tail to two hex hextets (::ffff:7f00:1), so fold it back to
+    // a dotted quad and re-apply the IPv4 rules.
+    if (host.startsWith("::ffff:"))
+        return isPrivateIPv4(mappedToIPv4(host.slice(7)));
+    return isPrivateIPv4(host);
+}
+/** Fold the tail of an ::ffff: IPv4-mapped address to a dotted quad. Accepts an
+ * already-dotted tail (a.b.c.d) or the parser's two-hextet hex form (7f00:1). */
+function mappedToIPv4(tail) {
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(tail))
+        return tail;
+    const g = tail.split(":");
+    if (g.length !== 2)
+        return "";
+    const hi = parseInt(g[0], 16), lo = parseInt(g[1], 16);
+    if (!Number.isFinite(hi) || !Number.isFinite(lo))
+        return "";
+    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+/** IPv4 dotted-quad private/loopback classifier (also reused for ::ffff: maps). */
+function isPrivateIPv4(host) {
     const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
     if (!m)
         return false;
@@ -32,6 +59,7 @@ export function isPrivateHost(url) {
     return (a === 127 || // 127.0.0.0/8 loopback
         a === 10 || // 10.0.0.0/8
         a === 0 || // 0.0.0.0/8
+        (a === 100 && b >= 64 && b <= 127) || // 100.64.0.0/10 CGNAT / Tailscale tailnet
         (a === 192 && b === 168) || // 192.168.0.0/16
         (a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12
         (a === 169 && b === 254) // 169.254.0.0/16 link-local
@@ -43,8 +71,63 @@ export function isPrivateHost(url) {
 // CDP's Fetch domain does not intercept WebSocket handshakes, so raw ws:// to a
 // private host falls back to Chrome's own Private Network Access (a timeout, not
 // a uniform block). Real port-scanners (and the :3001/:5900 probes) use HTTP.
-const PRIVATE_URL_PATTERNS = ["localhost", "127.", "0.0.0.0", "10.", "192.168.", "172.1", "172.2", "172.3", "169.254.", "[::1]"]
-    .flatMap((h) => ["http", "https"].map((s) => ({ urlPattern: `${s}://${h}*` })));
+// 100.6/7/8/9 + 100.1 coarsely cover the CGNAT range 100.64.0.0/10 (over-capture
+// gated by isPrivateHost, same as 172.1*); [fc/[fd cover IPv6 unique-local
+// fc00::/7; [::ffff: covers IPv4-mapped IPv6.
+const PRIVATE_URL_PATTERNS = [
+    "localhost", "127.", "0.0.0.0", "10.", "192.168.", "172.1", "172.2", "172.3",
+    "169.254.", "100.6", "100.7", "100.8", "100.9", "100.1", "[::1]", "[fc", "[fd", "[::ffff:",
+].flatMap((h) => ["http", "https"].map((s) => ({ urlPattern: `${s}://${h}*` })));
+/**
+ * US-layout physical-key descriptor for the printable symbol keys — the ones we
+ * can't derive from the character itself. A shifted symbol shares its base key's
+ * `code` and `windowsVirtualKeyCode` (one physical key makes both `2` and `@`),
+ * which is exactly what a real keyboard reports. Letters, digits, and Enter are
+ * handled programmatically in keyInfo().
+ */
+const SYMBOL_KEYS = {
+    " ": { code: "Space", vk: 32 },
+    "`": { code: "Backquote", vk: 192 }, "~": { code: "Backquote", vk: 192 },
+    "-": { code: "Minus", vk: 189 }, "_": { code: "Minus", vk: 189 },
+    "=": { code: "Equal", vk: 187 }, "+": { code: "Equal", vk: 187 },
+    "[": { code: "BracketLeft", vk: 219 }, "{": { code: "BracketLeft", vk: 219 },
+    "]": { code: "BracketRight", vk: 221 }, "}": { code: "BracketRight", vk: 221 },
+    "\\": { code: "Backslash", vk: 220 }, "|": { code: "Backslash", vk: 220 },
+    ";": { code: "Semicolon", vk: 186 }, ":": { code: "Semicolon", vk: 186 },
+    "'": { code: "Quote", vk: 222 }, "\"": { code: "Quote", vk: 222 },
+    ",": { code: "Comma", vk: 188 }, "<": { code: "Comma", vk: 188 },
+    ".": { code: "Period", vk: 190 }, ">": { code: "Period", vk: 190 },
+    "/": { code: "Slash", vk: 191 }, "?": { code: "Slash", vk: 191 },
+    // Shifted digit row — code/vk of the underlying digit key.
+    "!": { code: "Digit1", vk: 49 }, "@": { code: "Digit2", vk: 50 },
+    "#": { code: "Digit3", vk: 51 }, "$": { code: "Digit4", vk: 52 },
+    "%": { code: "Digit5", vk: 53 }, "^": { code: "Digit6", vk: 54 },
+    "&": { code: "Digit7", vk: 55 }, "*": { code: "Digit8", vk: 56 },
+    "(": { code: "Digit9", vk: 57 }, ")": { code: "Digit0", vk: 48 },
+};
+/**
+ * Resolve one character to a well-formed keystroke: the DOM `key`, the physical
+ * `code`, the legacy `windowsVirtualKeyCode` (`vk`), and the `text` to commit.
+ * Filling these in is the whole point — a bare `text`-only key event leaves
+ * `KeyboardEvent.keyCode === 0` and `code === ""`, which breaks keydown-driven
+ * UIs and is a hard bot-tell on login forms. Letters, digits, Enter and the US
+ * symbol keys are covered; anything else (accented/CJK/emoji) degrades to a
+ * plain text commit, the way an IME delivers a composed character.
+ */
+export function keyInfo(ch) {
+    if (ch === "\n" || ch === "\r")
+        return { key: "Enter", code: "Enter", vk: 13, text: "\r" };
+    if (/^[a-z]$/i.test(ch)) {
+        const upper = ch.toUpperCase();
+        return { key: ch, code: `Key${upper}`, vk: upper.charCodeAt(0), text: ch };
+    }
+    if (/^[0-9]$/.test(ch))
+        return { key: ch, code: `Digit${ch}`, vk: ch.charCodeAt(0), text: ch };
+    const sym = SYMBOL_KEYS[ch];
+    if (sym)
+        return { key: ch, code: sym.code, vk: sym.vk, text: ch };
+    return { key: ch, code: "", vk: 0, text: ch };
+}
 export class Page {
     cdp;
     sessionId;
@@ -53,6 +136,18 @@ export class Page {
     mouse = { x: 100, y: 100 };
     refs = new Map();
     closed = false;
+    // Cross-origin iframe support: CDP site-isolates a cross-origin child frame into
+    // its own renderer target ("OOPIF"), invisible to Accessibility/Runtime/Input
+    // commands sent on the main page's session — the #1 wall a drag-and-drop page
+    // builder (GHL, Webflow, etc.) hits, since the whole canvas is one child iframe.
+    // Target.setAutoAttach (scoped to this page's own session) discovers those child
+    // targets and hands us a session for each; `activeSessionId` is a single "which
+    // session do commands go to" pointer that every existing method already goes
+    // through via send(), so useFrame() retargets snapshot/click/fill/eval/type for
+    // free without duplicating each method.
+    activeSessionId;
+    frameSessions = [];
+    frameOff;
     // FedCM interception state (see enableFedCm).
     fedcmOff;
     fedcmQueue = [];
@@ -66,6 +161,7 @@ export class Page {
         this.cdp = cdp;
         this.sessionId = sessionId;
         this.targetId = targetId;
+        this.activeSessionId = sessionId;
     }
     /** Enable the domains we use and arm stealth injection on every document. */
     async init(opts = {}) {
@@ -80,6 +176,60 @@ export class Page {
         await this.send("Page.addScriptToEvaluateOnNewDocument", { source });
         if (opts.blockPrivateNetwork)
             await this.blockPrivateNetwork();
+        // Auto-attach to cross-origin child iframes of THIS page (scoped by sessionId
+        // on the command envelope, same as every other domain-enable here) so their
+        // Accessibility/Runtime/Input traffic becomes reachable via useFrame().
+        await this.send("Target.setAutoAttach", {
+            autoAttach: true,
+            waitForDebuggerOnStart: false,
+            flatten: true,
+        });
+        const offAttach = this.cdp.on("Target.attachedToTarget", (p) => {
+            if (p.targetInfo?.type === "iframe") {
+                this.frameSessions.push({ sessionId: p.sessionId, url: p.targetInfo.url, targetId: p.targetInfo.targetId });
+            }
+        }, "*");
+        // Prune child sessions when their iframe unmounts or navigates away, so
+        // frames() never lists a dead frame and useFrame() can't retarget to a
+        // destroyed session. detachedFromTarget carries the sessionId; targetDestroyed
+        // only the targetId — handle both.
+        const offDetach = this.cdp.on("Target.detachedFromTarget", (p) => { if (p.sessionId)
+            this.removeFrameSession((f) => f.sessionId === p.sessionId); }, "*");
+        const offDestroyed = this.cdp.on("Target.targetDestroyed", (p) => { if (p.targetId)
+            this.removeFrameSession((f) => f.targetId === p.targetId); }, "*");
+        this.frameOff = () => { offAttach(); offDetach(); offDestroyed(); };
+    }
+    /** Drop a dead child-frame session (its iframe unmounted or navigated). If it
+     *  was the active target, fall back to the main page and clear now-meaningless
+     *  refs so the next call errors cleanly instead of acting on a stale frame. */
+    removeFrameSession(match) {
+        const i = this.frameSessions.findIndex(match);
+        if (i < 0)
+            return;
+        const [gone] = this.frameSessions.splice(i, 1);
+        if (gone && this.activeSessionId === gone.sessionId) {
+            this.activeSessionId = this.sessionId;
+            this.refs.clear();
+        }
+    }
+    /** List discovered cross-origin child iframes (same-origin iframes don't need
+     *  this — they're already visible to the main session's Accessibility tree). */
+    async frames() {
+        return this.frameSessions.map((f, i) => ({ index: i + 1, url: f.url }));
+    }
+    /** Point every subsequent snapshot/click/fill/type/eval call at a child iframe
+     *  (index from frames()), or back at the main page with null/undefined. Clears
+     *  refs — a snapshot ref is only ever valid for the frame it was taken in. */
+    useFrame(index) {
+        this.refs.clear();
+        if (index == null) {
+            this.activeSessionId = this.sessionId;
+            return;
+        }
+        const f = this.frameSessions[index - 1];
+        if (!f)
+            throw new Error(`useFrame: no frame at index ${index} — call frames() first (found ${this.frameSessions.length})`);
+        this.activeSessionId = f.sessionId;
     }
     /**
      * Inject cookies before navigating — e.g. a logged-in session transferred
@@ -122,16 +272,31 @@ export class Page {
             },
         });
     }
+    /** Commands go to whichever session is "active" — the main page by default,
+     *  or a child iframe's own session after useFrame(). */
     send(method, params = {}) {
-        return this.cdp.send(method, params, this.sessionId);
+        return this.cdp.send(method, params, this.activeSessionId);
     }
-    /** Navigate and wait for the load event. */
+    /** Navigate and wait for the load event. Always the main page, regardless of
+     *  any active useFrame() — top-level navigation isn't a per-frame concept. */
     async goto(url, opts = {}) {
+        // A top-level nav invalidates every snapshot ref and returns us to the main
+        // page context: drop stale refs (a leftover ref would click wrong coords) and
+        // reset the active session so a prior useFrame() doesn't leak across the nav.
+        this.refs.clear();
+        this.activeSessionId = this.sessionId;
         const loaded = this.cdp.once("Page.loadEventFired", {
             sessionId: this.sessionId,
             timeout: opts.timeout ?? 30000,
         });
-        await this.send("Page.navigate", { url });
+        // Page.navigate resolves with { frameId, loaderId, errorText? }. On a DNS or
+        // connection failure Chrome STILL fires loadEventFired for its own error page,
+        // so the load event alone can't tell success from failure — errorText can.
+        const nav = await this.cdp.send("Page.navigate", { url }, this.sessionId);
+        if (nav?.errorText) {
+            loaded.catch(() => { }); // we're bailing; swallow the pending once() timeout rejection
+            throw new Error(`goto(${url}) failed: ${nav.errorText}`);
+        }
         await loaded;
         await sleep(this.rng.range(150, 400)); // settle, like a human reading
     }
@@ -198,15 +363,18 @@ export class Page {
             return null;
         }
     }
-    /** Move the cursor along a human curve to a target point. */
-    async moveTo(target) {
+    /** Move the cursor along a human curve to a target point. `buttons` mirrors
+     *  CDP's bitmask (1 = left button down) — pass 1 while dragging so the move
+     *  itself carries mousemove-with-button-held events a drag-and-drop library
+     *  listens for, not plain hover moves. */
+    async moveTo(target, buttons = 0) {
         const path = mousePath(this.mouse, target, this.rng);
         for (const p of path) {
             await this.send("Input.dispatchMouseEvent", {
                 type: "mouseMoved",
                 x: p.x,
                 y: p.y,
-                buttons: 0,
+                buttons,
             });
             await sleep(moveDelay(this.rng));
         }
@@ -224,6 +392,39 @@ export class Page {
         await sleep(this.rng.range(40, 110)); // press dwell
         await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...common });
     }
+    /**
+     * Drag from one point to another. Many drag-drop site/page builders (GHL,
+     * Webflow, most "drag a card onto a canvas" UIs) use pointer-based DnD
+     * libraries that key off real mousedown -> mousemove(button held) -> mouseup,
+     * not the legacy HTML5 dragstart/drop events, or any semantic role an a11y
+     * tree would expose — click() alone can't reach these; this can. Both ends
+     * are viewport coordinates, since the draggable card AND its drop target are
+     * usually plain divs with no accessible ref of their own — read them off a
+     * veil_screenshot.
+     */
+    async dragCore(fromX, fromY, toX, toY) {
+        await this.moveTo({ x: fromX, y: fromY });
+        await sleep(this.rng.range(30, 90));
+        const downCommon = { x: fromX, y: fromY, button: "left", clickCount: 1 };
+        await this.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...downCommon });
+        await sleep(this.rng.range(40, 100)); // dwell so the library's own drag-start threshold fires
+        await this.moveTo({ x: toX, y: toY }, 1); // move WITH the button held — this is what a DnD listener sees as "dragging"
+        await sleep(this.rng.range(40, 100));
+        const upCommon = { x: toX, y: toY, button: "left", clickCount: 1 };
+        await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...upCommon });
+    }
+    /** Drag an element by snapshot ref to an absolute viewport point. */
+    async dragRefTo(ref, toX, toY) {
+        const from = this.refs.get(ref);
+        if (!from)
+            throw new Error(`No element with ref ${ref}. Call snapshot() first.`);
+        await this.dragCore(from.center.x, from.center.y, toX, toY);
+    }
+    /** Drag between two absolute viewport points — for when neither the source
+     *  card nor the drop target has a resolvable snapshot ref. */
+    async dragAt(fromX, fromY, toX, toY) {
+        await this.dragCore(fromX, fromY, toX, toY);
+    }
     /** Bring this page's target to the foreground — CDP Input only routes to the active target. */
     async bringToFront() {
         await this.send("Page.bringToFront");
@@ -237,26 +438,74 @@ export class Page {
         await sleep(this.rng.range(40, 110));
         await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...common });
     }
-    /** Type text into the focused element with human cadence. */
+    /**
+     * Dispatch one well-formed key: rawKeyDown, then a `char` event only if the
+     * key produces text, then keyUp (no text) — the exact shape press() relies on,
+     * always carrying key/code/windowsVirtualKeyCode/nativeVirtualKeyCode so the
+     * page never sees a `keyCode === 0` bot-tell. `modifiers` is a CDP bitfield
+     * (Alt 1, Ctrl 2, Meta 4, Shift 8) for shortcuts like Ctrl+A.
+     */
+    async sendKey(opts) {
+        const base = {
+            key: opts.key,
+            code: opts.code,
+            windowsVirtualKeyCode: opts.vk,
+            nativeVirtualKeyCode: opts.vk,
+            ...(opts.modifiers ? { modifiers: opts.modifiers } : {}),
+        };
+        await this.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base, ...(opts.text ? { text: opts.text } : {}) });
+        if (opts.text)
+            await this.send("Input.dispatchKeyEvent", { type: "char", ...base, text: opts.text });
+        await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+    }
+    /**
+     * Scroll the page by a pixel delta via a real mouse-wheel event dispatched at
+     * the current cursor position (positive dy scrolls down, positive dx right).
+     * Use it to reveal lazy-loaded / off-screen content before snapshot().
+     */
+    async scroll(dx, dy) {
+        await this.send("Input.dispatchMouseEvent", {
+            type: "mouseWheel",
+            x: this.mouse.x,
+            y: this.mouse.y,
+            deltaX: dx,
+            deltaY: dy,
+        });
+        await sleep(this.rng.range(80, 200)); // settle, like a human watching content load
+    }
+    /** Type text into the focused element with human cadence. Each character is
+     *  dispatched as a real keydown/char/keyUp with the right key, code, and
+     *  virtual-key code (see keyInfo) — the bare text-only events this used to send
+     *  read as keyCode===0 and broke keydown-driven login forms. */
     async type(text) {
         for (const ch of text) {
-            await this.send("Input.dispatchKeyEvent", { type: "keyDown", text: ch });
-            await this.send("Input.dispatchKeyEvent", { type: "keyUp", text: ch });
+            const k = keyInfo(ch);
+            await this.sendKey({ key: k.key, code: k.code, vk: k.vk, text: k.text });
             await sleep(keyDelay(this.rng, ch));
         }
     }
-    /** Click a field then type into it. */
+    /** Clear the focused field: select-all (Ctrl+A) then Delete, via the Input
+     *  domain like the rest of our key dispatch. Playwright's fill() clears first;
+     *  without this, filling a pre-populated input yields "oldnewvalue". */
+    async clearField() {
+        await this.sendKey({ key: "a", code: "KeyA", vk: 65, modifiers: 2 }); // Ctrl+A → select all
+        await this.sendKey({ key: "Delete", code: "Delete", vk: 46 }); // delete the selection
+    }
+    /** Click a field, clear any existing value, then type into it. */
     async fill(ref, text) {
         await this.click(ref);
         await sleep(this.rng.range(60, 160));
+        await this.clearField();
         await this.type(text);
     }
-    /** Capture a PNG screenshot (Buffer) — feed to a vision model. */
+    /** Capture a PNG screenshot (Buffer) — feed to a vision model. Always the main
+     *  page's viewport (Page.captureScreenshot isn't a per-frame concept), regardless
+     *  of any active useFrame(). */
     async screenshot(opts = {}) {
         const params = { format: "png" };
         if (opts.fullPage)
             params.captureBeyondViewport = true;
-        const { data } = await this.send("Page.captureScreenshot", params);
+        const { data } = await this.cdp.send("Page.captureScreenshot", params, this.sessionId);
         return Buffer.from(data, "base64");
     }
     /** Poll an expression until truthy (replaces flaky fixed sleeps). */
@@ -328,11 +577,7 @@ export class Page {
         const k = KEYS[key];
         if (!k)
             throw new Error(`press: unsupported key ${key}`);
-        const base = { key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk };
-        await this.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base, ...(k.text ? { text: k.text } : {}) });
-        if (k.text)
-            await this.send("Input.dispatchKeyEvent", { type: "char", ...base, text: k.text });
-        await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
+        await this.sendKey({ key, code: k.code, vk: k.vk, text: k.text });
     }
     // --- FedCM: drive federated sign-in ("Sign in with Google" one-tap, etc.) ---
     // Chrome renders FedCM account choosers as native browser UI that no synthetic
@@ -353,11 +598,15 @@ export class Page {
      */
     async enableFedCm(opts = {}) {
         const autoSelect = opts.autoSelectFirst ?? true;
-        await this.send("FedCm.enable", { disableRejectionDelay: true });
+        // FedCM is a top-level-page flow: enable it (and every later FedCm.* command)
+        // on the MAIN session explicitly, matching the dialogShown listener below —
+        // otherwise a useFrame() before sign-in would point these at a child session
+        // and the RP's navigator.credentials.get() would hang unresolved.
+        await this.cdp.send("FedCm.enable", { disableRejectionDelay: true }, this.sessionId);
         // A prior dismissal drops the IdP into a cooldown where the dialog silently
         // won't reappear; clear it so the next trigger actually shows.
         try {
-            await this.send("FedCm.resetCooldown");
+            await this.cdp.send("FedCm.resetCooldown", {}, this.sessionId);
         }
         catch { }
         if (this.fedcmOff)
@@ -413,13 +662,15 @@ export class Page {
     async selectFedCmAccount(accountIndex = 0, dialogId = this.lastFedcmDialogId) {
         if (!dialogId)
             throw new Error("selectFedCmAccount: no FedCM dialog has appeared yet");
-        await this.send("FedCm.selectAccount", { dialogId, accountIndex });
+        // Target the main session explicitly (not activeSessionId): this also runs
+        // from the dialogShown auto-select handler, which can fire after a useFrame().
+        await this.cdp.send("FedCm.selectAccount", { dialogId, accountIndex }, this.sessionId);
     }
     /** Dismiss the current FedCM dialog (decline the sign-in). */
     async dismissFedCm(dialogId = this.lastFedcmDialogId) {
         if (!dialogId)
             return;
-        await this.send("FedCm.dismissDialog", { dialogId, triggerCooldown: false });
+        await this.cdp.send("FedCm.dismissDialog", { dialogId, triggerCooldown: false }, this.sessionId);
     }
     /** Stop intercepting FedCM. Call after a sign-in so a later navigation that
      *  probes FedCM isn't left hanging on us. */
@@ -429,7 +680,7 @@ export class Page {
         this.fedcmQueue = [];
         this.fedcmWaiters = [];
         try {
-            await this.send("FedCm.disable");
+            await this.cdp.send("FedCm.disable", {}, this.sessionId);
         }
         catch { }
     }
@@ -467,9 +718,14 @@ export class Page {
     async blockPrivateNetwork() {
         if (this.blockPrivateOff)
             return;
+        // Fetch is enabled on the MAIN session and its requestPaused events fire
+        // asynchronously — possibly after a useFrame() has repointed activeSessionId at
+        // a child. So every command here targets this.sessionId explicitly (not
+        // this.send, which follows activeSessionId): a continue/fail sent to the wrong
+        // session can't find the requestId, and the paused request would hang forever.
         // Learn the main frame so we can tell an agent nav from a page's own probe.
         try {
-            const { frameTree } = await this.send("Page.getFrameTree");
+            const { frameTree } = await this.cdp.send("Page.getFrameTree", {}, this.sessionId);
             this.mainFrameId = frameTree?.frame?.id;
             this.topPrivate = isPrivateHost(frameTree?.frame?.url ?? "");
         }
@@ -481,17 +737,17 @@ export class Page {
                 this.topPrivate = isPrivateHost(f.url ?? "");
             }
         }, this.sessionId);
-        await this.send("Fetch.enable", { patterns: PRIVATE_URL_PATTERNS });
+        await this.cdp.send("Fetch.enable", { patterns: PRIVATE_URL_PATTERNS }, this.sessionId);
         const offFetch = this.cdp.on("Fetch.requestPaused", (p) => {
             const url = p.request?.url ?? "";
             // Allow: agent-driven top-level nav, and a private page's own resources.
             // Block: any other private-host request from a public page (the scan).
             const isMainNav = p.resourceType === "Document" && p.frameId === this.mainFrameId;
             if (isPrivateHost(url) && !isMainNav && !this.topPrivate) {
-                this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "AccessDenied" }).catch(() => { });
+                this.cdp.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "AccessDenied" }, this.sessionId).catch(() => { });
             }
             else {
-                this.send("Fetch.continueRequest", { requestId: p.requestId }).catch(() => { });
+                this.cdp.send("Fetch.continueRequest", { requestId: p.requestId }, this.sessionId).catch(() => { });
             }
         }, this.sessionId);
         this.blockPrivateOff = () => { offNav(); offFetch(); };
@@ -511,6 +767,8 @@ export class Page {
             return;
         this.closed = true;
         this.refs.clear();
+        this.frameOff?.();
+        this.frameSessions = [];
         if (this.targetId) {
             try {
                 // Target.closeTarget closes the page/target and frees its resources.

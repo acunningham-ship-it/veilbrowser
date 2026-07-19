@@ -12,6 +12,10 @@
  */
 export class CDP {
     url;
+    /** Default per-command timeout (ms). Overridable per-call and via `defaultTimeout`. */
+    static DEFAULT_TIMEOUT = 30000;
+    /** Per-instance override for the command timeout applied when a call passes none. */
+    defaultTimeout = CDP.DEFAULT_TIMEOUT;
     ws;
     nextId = 1;
     pending = new Map();
@@ -33,8 +37,11 @@ export class CDP {
             this.ws.addEventListener("error", (e) => reject(new Error(`CDP socket error: ${e?.message ?? "unknown"}`)));
             this.ws.addEventListener("close", () => {
                 this.closed = true;
-                for (const { reject } of this.pending.values())
+                for (const { reject, timer } of this.pending.values()) {
+                    if (timer)
+                        clearTimeout(timer);
                     reject(new Error("CDP connection closed"));
+                }
                 this.pending.clear();
             });
             this.ws.addEventListener("message", (ev) => this.onMessage(String(ev.data)));
@@ -53,6 +60,8 @@ export class CDP {
             if (!p)
                 return;
             this.pending.delete(msg.id);
+            if (p.timer)
+                clearTimeout(p.timer);
             if (msg.error)
                 p.reject(new Error(`${p.method}: ${msg.error.message} (${msg.error.code})`));
             else
@@ -70,8 +79,16 @@ export class CDP {
             }
         }
     }
-    /** Send a CDP command. Optionally scoped to a session (page target). */
-    send(method, params = {}, sessionId) {
+    /**
+     * Send a CDP command. Optionally scoped to a session (page target).
+     *
+     * Rejects after `timeoutMs` (default `defaultTimeout`, 30s) if no response
+     * arrives — a hung renderer never replies, so without this the promise would
+     * never settle. A `timeoutMs <= 0` disables the timeout. The pending entry is
+     * always removed on timeout, on a `ws.send` throw (socket CLOSING/CLOSED), and
+     * on response — so the `pending` map can't leak.
+     */
+    send(method, params = {}, sessionId, timeoutMs = this.defaultTimeout) {
         if (this.closed)
             return Promise.reject(new Error("CDP connection closed"));
         const id = this.nextId++;
@@ -79,8 +96,29 @@ export class CDP {
         if (sessionId)
             payload.sessionId = sessionId;
         return new Promise((resolve, reject) => {
-            this.pending.set(id, { resolve, reject, method });
-            this.ws.send(JSON.stringify(payload));
+            let timer;
+            if (timeoutMs > 0) {
+                timer = setTimeout(() => {
+                    // Only reject if still pending — a late-arriving response could have
+                    // resolved and deleted us already.
+                    if (this.pending.delete(id))
+                        reject(new Error(`${method}: timed out after ${timeoutMs}ms (no CDP response)`));
+                }, timeoutMs);
+                // Don't let a pending command keep the process alive on its own.
+                timer?.unref?.();
+            }
+            this.pending.set(id, { resolve, reject, method, timer });
+            try {
+                this.ws.send(JSON.stringify(payload));
+            }
+            catch (e) {
+                // Socket in CLOSING/CLOSED throws synchronously — clear the timer and the
+                // orphaned pending entry so it doesn't leak, then surface the error.
+                if (timer)
+                    clearTimeout(timer);
+                this.pending.delete(id);
+                reject(new Error(`${method}: failed to send command (${e?.message ?? "socket error"})`));
+            }
         });
     }
     /** Subscribe to an event. Pass sessionId, or "*" to match any session. */

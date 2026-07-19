@@ -8,6 +8,7 @@
  *
  *   bun run src/mcp.ts            # headful (stealthiest)
  *   VEIL_HEADLESS=1 bun run src/mcp.ts
+ *   VEIL_USER_DATA_DIR=/path/to/profile bun run src/mcp.ts  # persistent profile
  */
 import { createInterface } from "node:readline";
 import { Browser } from "./browser.js";
@@ -17,7 +18,10 @@ let browser: Browser | null = null;
 let page: Page | null = null;
 
 async function ensurePage(): Promise<Page> {
-  if (!browser) browser = await Browser.launch({ headless: process.env.VEIL_HEADLESS === "1" });
+  if (!browser) browser = await Browser.launch({
+    headless: process.env.VEIL_HEADLESS === "1",
+    userDataDir: process.env.VEIL_USER_DATA_DIR,
+  });
   if (!page) page = await browser.newPage();
   return page;
 }
@@ -54,6 +58,12 @@ const TOOLS = [
   { name: "veil_fedcm_signin", description: "Complete a federated ('Sign in with Google', FedCM) login that Chrome renders as a native chooser no click can reach: waits for the intercepted account chooser, selects an account, and returns it. Pass triggerRef to first click an active sign-in button; omit it for one-tap/passive flows (call veil_fedcm_enable before navigating). accountIndex defaults to 0.",
     inputSchema: { type: "object", properties: { triggerRef: { type: "number" }, accountIndex: { type: "number" } } } },
   { name: "veil_close", description: "Close the browser.", inputSchema: { type: "object", properties: {} } },
+  { name: "veil_drag", description: "Drag from one point to another — real mousedown -> mousemove(button held) -> mouseup, not the HTML5 drag events. Use this for 'drag a card onto a canvas' UIs (site/page builders, Kanban boards, sortable lists) whose drop targets don't respond to a plain click. Pass `ref` for the source if it has a snapshot ref, otherwise `fromX`/`fromY`; the destination is almost always a plain div with no ref, so give `toX`/`toY` read off a veil_screenshot.",
+    inputSchema: { type: "object", properties: { ref: { type: "number" }, fromX: { type: "number" }, fromY: { type: "number" }, toX: { type: "number" }, toY: { type: "number" } }, required: ["toX", "toY"] } },
+  { name: "veil_frames", description: "List cross-origin child iframes discovered on the current page (e.g. a drag-and-drop site builder whose whole canvas is one iframe on a different subdomain). Same-origin iframes don't need this — they already show up in a normal veil_snapshot. Call after veil_goto if a page you expect to interact with returns '(no interactive elements)'.",
+    inputSchema: { type: "object", properties: {} } },
+  { name: "veil_use_frame", description: "Point every following veil_snapshot/veil_click/veil_fill/veil_type/veil_eval call at one child iframe (index from veil_frames), instead of the main page. Omit index (or pass null) to switch back to the main page. Existing refs are invalidated on switch — call veil_snapshot again after switching.",
+    inputSchema: { type: "object", properties: { index: { type: ["number", "null"] } } } },
 ];
 
 async function callTool(name: string, args: any): Promise<any> {
@@ -124,6 +134,18 @@ async function callTool(name: string, args: any): Promise<any> {
       await p.disableFedCm();
       return text(`signed in via FedCM as ${account.email ?? account.name ?? account.accountId}`);
     }
+    case "veil_drag":
+      if (args.ref != null) await p.dragRefTo(args.ref, args.toX, args.toY);
+      else await p.dragAt(args.fromX, args.fromY, args.toX, args.toY);
+      return text(`dragged to (${args.toX}, ${args.toY})`);
+    case "veil_frames": {
+      const frames = await p.frames();
+      if (!frames.length) return text("(no cross-origin child iframes discovered yet — they're detected as they attach, right after veil_goto)");
+      return text(frames.map((f) => `[${f.index}] ${f.url}`).join("\n"));
+    }
+    case "veil_use_frame":
+      p.useFrame(args.index ?? null);
+      return text(args.index == null ? "switched to main page" : `switched to frame [${args.index}]`);
     default:
       throw new Error(`unknown tool: ${name}`);
   }
