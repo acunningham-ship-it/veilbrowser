@@ -1,6 +1,6 @@
 {
   "name": "@achamm/veilbrowser",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Stealth browser automation for AI agents. Drives real Chrome over raw CDP—no Playwright, no Puppeteer, no WebDriver. Zero runtime dependencies. Passes bot.sannysoft.com 57/57; bypasses Cloudflare's JS challenge.",
   "type": "module",
   "main": "dist/index.js",
