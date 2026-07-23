@@ -118,7 +118,10 @@ The selling point isn't only stealth — it's that agents drive it *well*:
 - **`screenshot()`** returns a PNG buffer, ready for vision grounding — the viewport,
   the whole `{fullPage}`, a single element `{ref}`, or an explicit `{clip}` rectangle.
 - **`click` / `fill` / `type`** drive real CDP input with human dynamics.
-- **`waitFor(expr)`** replaces flaky fixed sleeps.
+- **`waitFor(expr)`** replaces flaky fixed sleeps — and, like `evaluate()`, is
+  timeout-bounded, so a wedged page rejects cleanly instead of hanging the agent.
+- **`goto()`** returns `{ status, ok }` for the main response, so callers can detect
+  a 4xx/5xx wall instead of only seeing a rendered error page.
 - **`blockResources(types, {urls})`** drops image/font/media/etc. and URL-matched
   requests — a big speed and footprint win for scraping (shares one Fetch handler
   with the private-network guard, so both are active at once).

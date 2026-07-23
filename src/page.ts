@@ -404,23 +404,46 @@ export class Page {
    *  (default) or "networkidle" (no network for ~500ms — better for SPAs that
    *  fetch after the load event). Reset ref/session state so a prior useFrame()
    *  can't leak across the nav and a leftover ref can't click wrong coords. */
-  async goto(url: string, opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {}) {
+  async goto(
+    url: string,
+    opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {},
+  ): Promise<{ url: string; status?: number; ok?: boolean }> {
     this.refs.clear();
     this.activeSessionId = this.sessionId;
     const timeout = opts.timeout ?? 30000;
-    // Arm the waiter BEFORE navigating: we can't miss loadEventFired, and a
-    // networkidle waiter is already counting the navigation's own requests.
-    const waiter = this.waitForLoad(opts.waitUntil ?? "load", timeout);
-    // Page.navigate resolves with { frameId, loaderId, errorText? }. On a DNS or
-    // connection failure Chrome STILL fires loadEventFired for its own error page,
-    // so the load event alone can't tell success from failure — errorText can.
-    const nav = await this.cdp.send<{ errorText?: string }>("Page.navigate", { url }, this.sessionId);
-    if (nav?.errorText) {
-      waiter.catch(() => {}); // we're bailing; swallow the pending waiter rejection
-      throw new Error(`goto(${url}) failed: ${nav.errorText}`);
+    // Capture the main document's HTTP status so callers can detect 4xx/5xx: match
+    // the Document response to THIS navigation's loaderId (redirects keep the
+    // loaderId, so the final hop's status wins). Needs the Network domain enabled.
+    await this.cdp.send("Network.enable", {}, this.sessionId).catch(() => {});
+    const docStatus = new Map<string, number>(); // loaderId -> HTTP status
+    const offResp = this.cdp.on(
+      "Network.responseReceived",
+      (p: any) => { if (p.type === "Document" && p.loaderId) docStatus.set(p.loaderId, p.response?.status); },
+      this.sessionId,
+    );
+    let loaderId: string | undefined;
+    try {
+      // Arm the waiter BEFORE navigating: we can't miss loadEventFired, and a
+      // networkidle waiter is already counting the navigation's own requests.
+      const waiter = this.waitForLoad(opts.waitUntil ?? "load", timeout);
+      // Page.navigate resolves with { frameId, loaderId, errorText? }. On a DNS or
+      // connection failure Chrome STILL fires loadEventFired for its own error page,
+      // so the load event alone can't tell success from failure — errorText can.
+      const nav = await this.cdp.send<{ errorText?: string; loaderId?: string }>("Page.navigate", { url }, this.sessionId);
+      if (nav?.errorText) {
+        waiter.catch(() => {}); // we're bailing; swallow the pending waiter rejection
+        throw new Error(`goto(${url}) failed: ${nav.errorText}`);
+      }
+      loaderId = nav?.loaderId;
+      await waiter;
+    } finally {
+      offResp();
     }
-    await waiter;
     await sleep(this.rng.range(150, 400)); // settle, like a human reading
+    // status stays undefined only when no Document response is observed for this
+    // loaderId (e.g. about:blank) — additive, so callers that ignore it are fine.
+    const status = loaderId ? docStatus.get(loaderId) : undefined;
+    return { url, status, ok: status == null ? undefined : status >= 200 && status < 400 };
   }
 
   /** Reload the current page (Page.reload), waiting per `waitUntil`. */
@@ -499,13 +522,26 @@ export class Page {
     });
   }
 
-  /** Evaluate JS in the page WITHOUT Runtime.enable (avoids the CDP tell). */
-  async evaluate<T = any>(expression: string): Promise<T> {
-    const r = await this.send("Runtime.evaluate", {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-    });
+  /** Evaluate JS in the page WITHOUT Runtime.enable (avoids the CDP tell).
+   *  Bounded by `timeout` (default 30s): a wedged renderer — or an
+   *  awaitPromise expression that never settles — otherwise leaves this pending
+   *  forever, so we race the CDP send against a timer and reject cleanly. */
+  async evaluate<T = any>(expression: string, opts: { timeout?: number } = {}): Promise<T> {
+    const timeout = opts.timeout ?? 30000;
+    let r: any;
+    try {
+      r = await this.cdp.send(
+        "Runtime.evaluate",
+        { expression, returnByValue: true, awaitPromise: true },
+        this.activeSessionId,
+        timeout,
+      );
+    } catch (e: any) {
+      if (String(e?.message ?? "").includes("timed out")) {
+        throw new Error(`evaluate: timed out after ${timeout}ms (page wedged?)`);
+      }
+      throw e;
+    }
     if (r.exceptionDetails) throw new Error(`evaluate: ${r.exceptionDetails.text}`);
     return r.result?.value as T;
   }
@@ -846,13 +882,23 @@ export class Page {
     return Buffer.from(data, "base64");
   }
 
-  /** Poll an expression until truthy (replaces flaky fixed sleeps). */
+  /** Poll an expression until truthy (replaces flaky fixed sleeps). Each probe is
+   *  bounded by the time remaining, so a wedged page can't make waitFor overrun
+   *  its own timeout — it fails as a waitFor timeout, not a 30s evaluate hang. */
   async waitFor(expression: string, opts: { timeout?: number; poll?: number } = {}) {
     const timeout = opts.timeout ?? 10000;
     const poll = opts.poll ?? 100;
     const start = Date.now();
     while (Date.now() - start < timeout) {
-      if (await this.evaluate<boolean>(`!!(${expression})`)) return;
+      const remaining = timeout - (Date.now() - start);
+      try {
+        if (await this.evaluate<boolean>(`!!(${expression})`, { timeout: remaining })) return;
+      } catch (e: any) {
+        // A wedged page makes the probe time out — that's a waitFor timeout, not a
+        // crash. Any other evaluate error (e.g. a bad expression) propagates.
+        if (String(e?.message ?? "").includes("timed out")) break;
+        throw e;
+      }
       await sleep(poll);
     }
     throw new Error(`waitFor timed out: ${expression}`);
