@@ -43,6 +43,8 @@ const TOOLS = [
         inputSchema: { type: "object", properties: { expression: { type: "string" }, timeout: { type: "number", description: "ms before giving up (default 10000)" }, poll: { type: "number", description: "ms between checks (default 100)" } }, required: ["expression"] } },
     { name: "veil_click_at", description: "Trusted click at absolute viewport coordinates (x, y). Use when there is no snapshot ref to target — a canvas, map, or custom widget.",
         inputSchema: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"] } },
+    { name: "veil_get_cookies", description: "Return the browser's current cookies as JSON (name, value, domain, path, expires, httpOnly, secure, sameSite, ...). Symmetric with cookie injection. Optionally pass `urls` to scope the read to specific origins.",
+        inputSchema: { type: "object", properties: { urls: { type: "array", items: { type: "string" }, description: "origins to scope the read to (default: the page's current frames)" } } } },
     { name: "veil_upload", description: "Attach local files to a file <input> (even a hidden one) without an OS file picker. Paths must be absolute. selector defaults to the first input[type=file]; pass a specific one if the page has several.",
         inputSchema: { type: "object", properties: { paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, selector: { type: "string", description: "CSS selector for the file input (default input[type=\"file\"])" } }, required: ["paths"] } },
     { name: "veil_upload_via_picker", description: "Attach files through a control that opens a file picker (SPAs like Gemini that create the <input> lazily on click). Pass the snapshot ref of the trigger element and absolute file paths.",
@@ -101,6 +103,8 @@ async function callTool(name, args) {
         case "veil_click_at":
             await p.clickAt(args.x, args.y);
             return text(`clicked at (${args.x}, ${args.y})`);
+        case "veil_get_cookies":
+            return text(JSON.stringify(await p.getCookies(args.urls), null, 2));
         case "veil_upload":
             await p.uploadFile(args.paths, args.selector);
             return text(`uploaded ${args.paths.length} file(s)`);
