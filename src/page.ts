@@ -292,6 +292,20 @@ export class Page {
   }
 
   /**
+   * Read the browser's current cookies (the symmetric counterpart to
+   * setCookies) — e.g. to export a session established interactively and reuse
+   * it elsewhere. Each entry is a CDP Cookie ({name, value, domain, path,
+   * expires, size, httpOnly, secure, session, sameSite?, ...}). With no `urls`,
+   * returns the cookies visible to the frames the page is currently on; pass
+   * `urls` to scope the read to specific origins.
+   */
+  async getCookies(urls?: string[]): Promise<Array<Record<string, any>>> {
+    await this.send("Network.enable");
+    const { cookies } = await this.send("Network.getCookies", urls ? { urls } : {});
+    return cookies ?? [];
+  }
+
+  /**
    * Scrub the "HeadlessChrome" token from the UA and the matching client-hint
    * brands. headless=new leaks it in both navigator.userAgent AND the Sec-CH-UA
    * request headers; setUserAgentOverride with metadata fixes both at once. A
