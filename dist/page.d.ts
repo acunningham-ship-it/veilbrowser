@@ -206,6 +206,18 @@ export declare class Page {
      * resulting value; throws if the ref isn't a `<select>` or nothing matched.
      */
     select(ref: number, value: string): Promise<string>;
+    /**
+     * Read one element's rendered text (innerText, falling back to textContent)
+     * by snapshot ref. Agents often want a single element's text — a price, a
+     * status, a result cell — not the whole-page innerText() dump.
+     */
+    text(ref: number): Promise<string>;
+    /**
+     * Read one attribute of an element by snapshot ref (e.g. `href`, `value`,
+     * `aria-label`, a `data-*`). Returns the raw attribute string, or null if the
+     * element has no such attribute.
+     */
+    attribute(ref: number, name: string): Promise<string | null>;
     /** Capture a PNG screenshot (Buffer) — feed to a vision model. Always the main
      *  page's viewport (Page.captureScreenshot isn't a per-frame concept), regardless
      *  of any active useFrame(). */
