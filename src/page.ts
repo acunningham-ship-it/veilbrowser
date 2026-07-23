@@ -239,8 +239,10 @@ export class Page {
     if (!opts.fingerprint) await this.normalizeUserAgent();
     // Inject stealth before any page script runs, on every navigation/frame.
     // Only mask WebGL on SwiftShader hosts; with a real GPU the authentic vendor
-    // is consistent and masking it would be a detectable lie.
-    const source = buildStealth({ maskWebgl: opts.maskWebgl ?? false });
+    // is consistent and masking it would be a detectable lie. When a fingerprint
+    // is active it owns the WebGL vendor/renderer, so skip the base SwiftShader
+    // mask — otherwise two getParameter overrides would stack.
+    const source = buildStealth({ maskWebgl: (opts.maskWebgl ?? false) && !opts.fingerprint });
     await this.send("Page.addScriptToEvaluateOnNewDocument", { source });
     // Apply the fingerprint AFTER the base stealth so its masked getters win over
     // any self-gating backfill, and before the first navigation.

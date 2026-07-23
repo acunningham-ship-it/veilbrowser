@@ -149,17 +149,26 @@ to unmask** — the strongest kind of spoof, and they resolve natively
 `navigator.geolocation`). A US profile should carry a US timezone/locale (and
 optional US coordinates) — a region that disagrees with the UA is a contradiction
 detectors score. Only
-the handful of values CDP can't set (`hardwareConcurrency`, `deviceMemory`,
-`languages`, `screen.avail*`/colour depth) are injected as getters — each defined on
-the *prototype* (inherited, so no own-property tell) with its `toString()` masked to
-`[native code]`, the same discipline the base stealth uses.
+the values CDP can't set are injected as page-level overrides — `hardwareConcurrency`,
+`deviceMemory`, `languages`, `screen.avail*`/colour depth, the **WebGL vendor/renderer**
+(the two `UNMASKED_*` parameters), and **deterministic canvas + audio noise**. Every
+one is defined on the *prototype* (inherited, so no own-property tell) with its
+`toString()` masked to `[native code]` by a single `Function.prototype.toString` proxy
+that hides itself and leaves genuine native/user functions untouched — the same
+discipline the base stealth uses.
+
+The canvas/audio noise is **seeded, not random per call**: repeated reads of the same
+canvas or audio buffer return *identical* bytes (a per-call random is itself a tell),
+while a different `seed` yields a different — but equally stable — hash. So a profile
+carries its own consistent canvas/audio fingerprint instead of leaking the host's.
 
 Honest scope: this is **coherent fingerprint control**, not a magic bullet. It lets
 you present a consistent identity; it does not by itself defeat any particular hard
 target. `navigator.oscpu` is deliberately left unset (it's Firefox-only — a Chrome
-profile exposing it would be an anomaly), and `screen.colorDepth` follows the profile
-but the *rendered* pixels still come from the host GPU, so keep `webglVendor`/
-`webglRenderer` plausible for the platform you're claiming.
+profile exposing it would be an anomaly); `screen.colorDepth` follows the profile but
+the *rendered* pixels still come from the host GPU, so keep `webglVendor`/`webglRenderer`
+plausible for the platform you're claiming; and WebGL-*canvas* read-back (`toDataURL` on
+a WebGL canvas) is left to the vendor override, not noised.
 
 ## Agent tooling (the other half of the product)
 
