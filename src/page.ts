@@ -340,9 +340,16 @@ export class Page {
     const realUA = await this.evaluate<string>("navigator.userAgent");
     const cleanUA = realUA.replace("HeadlessChrome", "Chrome");
     if (cleanUA === realUA) return;
-    const major = (cleanUA.match(/Chrome\/(\d+)/)?.[1]) ?? "148";
+    await this.applyUserAgentOverride(cleanUA);
+  }
+
+  /** Set navigator.userAgent AND the matching Sec-CH-UA client-hint brands
+   *  consistently — a UA string without the aligned hints is itself a tell.
+   *  Shared by init's HeadlessChrome scrub and the public setUserAgent(). */
+  private async applyUserAgentOverride(ua: string) {
+    const major = (ua.match(/Chrome\/(\d+)/)?.[1]) ?? "148";
     await this.send("Emulation.setUserAgentOverride", {
-      userAgent: cleanUA,
+      userAgent: ua,
       acceptLanguage: "en-US,en;q=0.9",
       platform: "Linux x86_64",
       userAgentMetadata: {
@@ -358,6 +365,31 @@ export class Page {
         model: "",
         mobile: false,
       },
+    });
+  }
+
+  /**
+   * Override the User-Agent at runtime, keeping the Sec-CH-UA client-hint brands
+   * aligned with it (reuses init's normalization path — a bare UA string with
+   * mismatched hints is a fingerprint tell). Applies to subsequent requests.
+   */
+  async setUserAgent(userAgent: string) {
+    await this.applyUserAgentOverride(userAgent);
+  }
+
+  /**
+   * Set the viewport (and optionally device pixel ratio / mobile emulation) via
+   * Emulation.setDeviceMetricsOverride — the page sees this as its
+   * window.innerWidth/Height, screen size, and devicePixelRatio. Use it to
+   * emulate a phone (`{width:390,height:844,deviceScaleFactor:3,mobile:true}`)
+   * or force a fixed desktop size for reproducible screenshots.
+   */
+  async setViewport(opts: { width: number; height: number; deviceScaleFactor?: number; mobile?: boolean }) {
+    await this.send("Emulation.setDeviceMetricsOverride", {
+      width: opts.width,
+      height: opts.height,
+      deviceScaleFactor: opts.deviceScaleFactor ?? 1,
+      mobile: opts.mobile ?? false,
     });
   }
 
