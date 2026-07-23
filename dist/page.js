@@ -79,6 +79,24 @@ const PRIVATE_URL_PATTERNS = [
     "169.254.", "100.6", "100.7", "100.8", "100.9", "100.1", "[::1]", "[fc", "[fd", "[::ffff:",
 ].flatMap((h) => ["http", "https"].map((s) => ({ urlPattern: `${s}://${h}*` })));
 /**
+ * Friendly resource-type names → the CDP Network.ResourceType values that
+ * Fetch.requestPaused reports and Fetch patterns filter on. Lets blockResources()
+ * take `"image"` instead of `"Image"` and forgive a few common aliases.
+ */
+const RESOURCE_TYPES = {
+    image: "Image", images: "Image", img: "Image",
+    font: "Font", fonts: "Font",
+    media: "Media", video: "Media", audio: "Media",
+    stylesheet: "Stylesheet", css: "Stylesheet", style: "Stylesheet",
+    script: "Script", js: "Script",
+    xhr: "XHR", fetch: "Fetch",
+    document: "Document", doc: "Document",
+    websocket: "WebSocket", ws: "WebSocket",
+    eventsource: "EventSource",
+    manifest: "Manifest",
+    other: "Other",
+};
+/**
  * US-layout physical-key descriptor for the printable symbol keys — the ones we
  * can't derive from the character itself. A shifted symbol shares its base key's
  * `code` and `windowsVirtualKeyCode` (one physical key makes both `2` and `@`),
@@ -153,8 +171,14 @@ export class Page {
     fedcmQueue = [];
     fedcmWaiters = [];
     lastFedcmDialogId;
-    // Private-network block state (see blockPrivateNetwork).
-    blockPrivateOff;
+    // Fetch-interception state. The private-network guard and resource blocking
+    // share ONE requestPaused handler: two independent handlers would both try to
+    // answer the same paused request and the second continue/fail fails with
+    // "Invalid InterceptionId". applyFetchInterception() reconciles both.
+    blockPrivateOn = false;
+    blockedResourceTypes = new Set(); // CDP ResourceType values, e.g. "Image"
+    blockedUrlSubstrings = [];
+    fetchOff; // tears down the shared requestPaused + frameNavigated listeners
     mainFrameId;
     topPrivate = false; // is the page's own top-level origin private?
     constructor(cdp, sessionId, targetId) {
@@ -851,50 +875,113 @@ export class Page {
      * localhost resources — only a PUBLIC page reaching a private host is blocked.
      */
     async blockPrivateNetwork() {
-        if (this.blockPrivateOff)
+        if (this.blockPrivateOn)
             return;
-        // Fetch is enabled on the MAIN session and its requestPaused events fire
-        // asynchronously — possibly after a useFrame() has repointed activeSessionId at
-        // a child. So every command here targets this.sessionId explicitly (not
-        // this.send, which follows activeSessionId): a continue/fail sent to the wrong
-        // session can't find the requestId, and the paused request would hang forever.
-        // Learn the main frame so we can tell an agent nav from a page's own probe.
+        this.blockPrivateOn = true;
+        // Learn the main frame so the handler can tell an agent nav from a page's own
+        // probe. (Fetch runs on the MAIN session — see applyFetchInterception.)
         try {
             const { frameTree } = await this.cdp.send("Page.getFrameTree", {}, this.sessionId);
             this.mainFrameId = frameTree?.frame?.id;
             this.topPrivate = isPrivateHost(frameTree?.frame?.url ?? "");
         }
         catch { }
-        const offNav = this.cdp.on("Page.frameNavigated", (p) => {
-            const f = p.frame;
-            if (f && !f.parentId) {
-                this.mainFrameId = f.id;
-                this.topPrivate = isPrivateHost(f.url ?? "");
-            }
-        }, this.sessionId);
-        await this.cdp.send("Fetch.enable", { patterns: PRIVATE_URL_PATTERNS }, this.sessionId);
-        const offFetch = this.cdp.on("Fetch.requestPaused", (p) => {
-            const url = p.request?.url ?? "";
-            // Allow: agent-driven top-level nav, and a private page's own resources.
-            // Block: any other private-host request from a public page (the scan).
-            const isMainNav = p.resourceType === "Document" && p.frameId === this.mainFrameId;
-            if (isPrivateHost(url) && !isMainNav && !this.topPrivate) {
-                this.cdp.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "AccessDenied" }, this.sessionId).catch(() => { });
-            }
-            else {
-                this.cdp.send("Fetch.continueRequest", { requestId: p.requestId }, this.sessionId).catch(() => { });
-            }
-        }, this.sessionId);
-        this.blockPrivateOff = () => { offNav(); offFetch(); };
+        await this.applyFetchInterception();
     }
-    /** Lift the private-network block (re-allows localhost/LAN requests). */
+    /** Lift the private-network block (re-allows localhost/LAN requests). Leaves any
+     *  resource blocking in place. */
     async unblockPrivateNetwork() {
-        this.blockPrivateOff?.();
-        this.blockPrivateOff = undefined;
-        try {
-            await this.send("Fetch.disable");
+        if (!this.blockPrivateOn)
+            return;
+        this.blockPrivateOn = false;
+        await this.applyFetchInterception();
+    }
+    /**
+     * Block resource loads — a big speed and footprint win for scraping. Block by
+     * type (`["image","font","media","stylesheet"]`) and/or by URL substring
+     * (`{ urls: ["analytics","doubleclick"] }`); matching requests are failed via
+     * CDP's Fetch domain. Calls accumulate. Coexists with the private-network guard
+     * (both share one interception handler). Lift it all with unblockResources().
+     * Types accept friendly names (image, font, media, stylesheet, script, xhr,
+     * fetch, document, websocket, ...).
+     */
+    async blockResources(types = [], opts = {}) {
+        for (const t of types) {
+            const cdpType = RESOURCE_TYPES[t.toLowerCase()];
+            if (!cdpType)
+                throw new Error(`blockResources: unknown type "${t}" (known: ${Object.keys(RESOURCE_TYPES).join(", ")})`);
+            this.blockedResourceTypes.add(cdpType);
         }
-        catch { }
+        if (opts.urls)
+            this.blockedUrlSubstrings.push(...opts.urls);
+        await this.applyFetchInterception();
+    }
+    /** Lift resource blocking (leaves the private-network guard untouched). */
+    async unblockResources() {
+        this.blockedResourceTypes.clear();
+        this.blockedUrlSubstrings = [];
+        await this.applyFetchInterception();
+    }
+    /** The union of Fetch patterns for whatever guards are currently active. Only
+     *  matching requests get paused, so anything unblocked keeps its exact timing. */
+    fetchPatterns() {
+        const patterns = [];
+        if (this.blockPrivateOn)
+            patterns.push(...PRIVATE_URL_PATTERNS);
+        for (const t of this.blockedResourceTypes)
+            patterns.push({ urlPattern: "*", resourceType: t });
+        for (const sub of this.blockedUrlSubstrings)
+            patterns.push({ urlPattern: `*${sub}*` });
+        return patterns;
+    }
+    /** Decide the fate of one paused request against every active guard, in one
+     *  place. Commands target this.sessionId explicitly: requestPaused fires on the
+     *  MAIN session and may arrive after a useFrame() repointed activeSessionId, and
+     *  a continue/fail sent to the wrong session can't find the requestId (hang). */
+    handleFetchPaused(p) {
+        const url = p.request?.url ?? "";
+        const rtype = p.resourceType ?? "";
+        const requestId = p.requestId;
+        const respond = (fn, extra = {}) => this.cdp.send(`Fetch.${fn}`, { requestId, ...extra }, this.sessionId).catch(() => { });
+        // 1. Private-network guard: a PUBLIC page reaching a private host (the scan).
+        //    Allowed: the agent's own top-level nav, and a private page's own resources.
+        if (this.blockPrivateOn && isPrivateHost(url)) {
+            const isMainNav = rtype === "Document" && p.frameId === this.mainFrameId;
+            if (!isMainNav && !this.topPrivate)
+                return void respond("failRequest", { errorReason: "AccessDenied" });
+        }
+        // 2. Resource blocking: by CDP resource type or URL substring.
+        if (this.blockedResourceTypes.has(rtype) || this.blockedUrlSubstrings.some((s) => url.includes(s))) {
+            return void respond("failRequest", { errorReason: "BlockedByClient" });
+        }
+        return void respond("continueRequest");
+    }
+    /** (Re)configure the shared Fetch interception for the currently-active guards:
+     *  register the single requestPaused + frameNavigated listeners once, enable
+     *  Fetch with the union of patterns, and fully tear down when nothing is active. */
+    async applyFetchInterception() {
+        const patterns = this.fetchPatterns();
+        if (patterns.length === 0) {
+            this.fetchOff?.();
+            this.fetchOff = undefined;
+            try {
+                await this.cdp.send("Fetch.disable", {}, this.sessionId);
+            }
+            catch { }
+            return;
+        }
+        if (!this.fetchOff) {
+            const offNav = this.cdp.on("Page.frameNavigated", (p) => {
+                const f = p.frame;
+                if (f && !f.parentId) {
+                    this.mainFrameId = f.id;
+                    this.topPrivate = isPrivateHost(f.url ?? "");
+                }
+            }, this.sessionId);
+            const offFetch = this.cdp.on("Fetch.requestPaused", (p) => this.handleFetchPaused(p), this.sessionId);
+            this.fetchOff = () => { offNav(); offFetch(); };
+        }
+        await this.cdp.send("Fetch.enable", { patterns }, this.sessionId);
     }
     /** Close this page and detach its target from the browser. Idempotent. */
     async close() {
@@ -903,6 +990,7 @@ export class Page {
         this.closed = true;
         this.refs.clear();
         this.frameOff?.();
+        this.fetchOff?.();
         this.frameSessions = [];
         if (this.targetId) {
             try {

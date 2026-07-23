@@ -119,6 +119,9 @@ The selling point isn't only stealth — it's that agents drive it *well*:
   the whole `{fullPage}`, a single element `{ref}`, or an explicit `{clip}` rectangle.
 - **`click` / `fill` / `type`** drive real CDP input with human dynamics.
 - **`waitFor(expr)`** replaces flaky fixed sleeps.
+- **`blockResources(types, {urls})`** drops image/font/media/etc. and URL-matched
+  requests — a big speed and footprint win for scraping (shares one Fetch handler
+  with the private-network guard, so both are active at once).
 
 ## Federated sign-in (FedCM)
 
@@ -225,10 +228,11 @@ We test before we claim.
 ## Use from an AI agent (MCP)
 
 Veil ships an MCP server (`src/mcp.ts`) — already wired into **persoje**
-(`~/.config/persoje/mcp.json`), exposing 24 tools: `goto`, `snapshot`, `click`, `fill`,
-`type`, `select`, `press`, `scroll`, `wait_for`, `wait_for_selector`, `click_at`,
-`get_cookies`, `text`, `attribute`, `screenshot`, `eval`, `upload`, `upload_via_picker`,
-`fedcm_enable`, `fedcm_signin`, `drag`, `frames`, `use_frame`, `close`. Tool-execution failures come
+(`~/.config/persoje/mcp.json`), exposing 26 tools: `goto`, `snapshot`, `click`, `fill`,
+`type`, `select`, `press`, `scroll`, `block_resources`, `unblock_resources`, `wait_for`,
+`wait_for_selector`, `click_at`, `get_cookies`, `text`, `attribute`, `screenshot`, `eval`,
+`upload`, `upload_via_picker`, `fedcm_enable`, `fedcm_signin`, `drag`, `frames`,
+`use_frame`, `close`. Tool-execution failures come
 back as `isError` results (the model reads and self-corrects) rather than JSON-RPC errors.
 Verified end-to-end through persoje's own MCP client (discover → goto → snapshot). Any MCP host works:
 
