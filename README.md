@@ -286,14 +286,32 @@ Veil ships an MCP server (`src/mcp.ts`) — already wired into **persoje**
 `upload_via_picker`, `pdf`, `fedcm_enable`, `fedcm_signin`, `drag`, `frames`, `use_frame`,
 `close`. Tool-execution failures come
 back as `isError` results (the model reads and self-corrects) rather than JSON-RPC errors.
-Verified end-to-end through persoje's own MCP client (discover → goto → snapshot). Any MCP host works:
+Verified end-to-end through persoje's own MCP client (discover → goto → snapshot). Any MCP host works.
+
+The package ships a `veil-mcp` bin, so an installed user can launch the server without a
+checkout — copy-pasteable into any MCP host:
 
 ```jsonc
 { "servers": { "veil": {
-  "command": "/home/armani/.bun/bin/bun",
-  "args": ["run", "/home/armani/projects/veil/src/mcp.ts"],
+  "command": "npx",
+  "args": ["-y", "-p", "@achamm/veilbrowser", "veil-mcp"],
   "env": {}                          // headful + auto-Xvfb + real GPU (0% CreepJS).
                                      // Set VEIL_HEADLESS=1 for the faster server mode.
+} } }
+```
+
+Smoke-check the bin (returns the tools list, no browser launched):
+
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | npx -y -p @achamm/veilbrowser veil-mcp
+```
+
+Local dev alternative (from a checkout, no build step):
+
+```jsonc
+{ "servers": { "veil": {
+  "command": "bun",
+  "args": ["run", "src/mcp.ts"]      // run from the repo root
 } } }
 ```
 

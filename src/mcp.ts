@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Veil MCP server (stdio, JSON-RPC 2.0, newline-delimited).
  *
