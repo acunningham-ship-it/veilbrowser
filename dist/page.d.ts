@@ -127,6 +127,29 @@ export declare class Page {
      * no-op for headful Chrome, whose UA is already clean.
      */
     private normalizeUserAgent;
+    /** Set navigator.userAgent AND the matching Sec-CH-UA client-hint brands
+     *  consistently — a UA string without the aligned hints is itself a tell.
+     *  Shared by init's HeadlessChrome scrub and the public setUserAgent(). */
+    private applyUserAgentOverride;
+    /**
+     * Override the User-Agent at runtime, keeping the Sec-CH-UA client-hint brands
+     * aligned with it (reuses init's normalization path — a bare UA string with
+     * mismatched hints is a fingerprint tell). Applies to subsequent requests.
+     */
+    setUserAgent(userAgent: string): Promise<void>;
+    /**
+     * Set the viewport (and optionally device pixel ratio / mobile emulation) via
+     * Emulation.setDeviceMetricsOverride — the page sees this as its
+     * window.innerWidth/Height, screen size, and devicePixelRatio. Use it to
+     * emulate a phone (`{width:390,height:844,deviceScaleFactor:3,mobile:true}`)
+     * or force a fixed desktop size for reproducible screenshots.
+     */
+    setViewport(opts: {
+        width: number;
+        height: number;
+        deviceScaleFactor?: number;
+        mobile?: boolean;
+    }): Promise<void>;
     /** Commands go to whichever session is "active" — the main page by default,
      *  or a child iframe's own session after useFrame(). */
     private send;

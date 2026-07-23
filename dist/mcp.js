@@ -44,6 +44,10 @@ const TOOLS = [
         inputSchema: { type: "object", properties: { key: { type: "string", enum: ["Enter", "Tab", "Escape", "Backspace", "ArrowDown", "ArrowUp"] } }, required: ["key"] } },
     { name: "veil_scroll", description: "Scroll the page by a pixel delta via a real mouse-wheel event (positive dy scrolls down, positive dx scrolls right). Reveals lazy-loaded / off-screen content; re-run veil_snapshot after.",
         inputSchema: { type: "object", properties: { dx: { type: "number", description: "horizontal pixels (default 0)" }, dy: { type: "number", description: "vertical pixels (positive = down)" } }, required: ["dy"] } },
+    { name: "veil_set_viewport", description: "Set the viewport size (and optional deviceScaleFactor / mobile emulation) — the page sees this as window.innerWidth/Height, screen size, and devicePixelRatio. Emulate a phone or force a fixed desktop size for reproducible screenshots.",
+        inputSchema: { type: "object", properties: { width: { type: "number" }, height: { type: "number" }, deviceScaleFactor: { type: "number", description: "device pixel ratio (default 1)" }, mobile: { type: "boolean", description: "mobile emulation (default false)" } }, required: ["width", "height"] } },
+    { name: "veil_set_user_agent", description: "Override the User-Agent at runtime, keeping the Sec-CH-UA client-hint brands aligned with it (a bare UA with mismatched hints is a fingerprint tell).",
+        inputSchema: { type: "object", properties: { userAgent: { type: "string" } }, required: ["userAgent"] } },
     { name: "veil_block_resources", description: "Block resource loads to speed up scraping and shrink your footprint — by type (image, font, media, stylesheet, script, xhr, fetch, document, websocket, ...) and/or by URL substring. Calls accumulate; coexists with the private-network guard. Lift with veil_unblock_resources.",
         inputSchema: { type: "object", properties: { types: { type: "array", items: { type: "string" }, description: 'resource types to block, e.g. ["image","font","media"]' }, urls: { type: "array", items: { type: "string" }, description: 'URL substrings to block, e.g. ["analytics","doubleclick"]' } } } },
     { name: "veil_unblock_resources", description: "Lift all resource blocking set by veil_block_resources (leaves the private-network guard untouched).",
@@ -116,6 +120,12 @@ async function callTool(name, args) {
         case "veil_scroll":
             await p.scroll(args.dx ?? 0, args.dy ?? 0);
             return text(`scrolled (${args.dx ?? 0}, ${args.dy ?? 0})`);
+        case "veil_set_viewport":
+            await p.setViewport({ width: args.width, height: args.height, deviceScaleFactor: args.deviceScaleFactor, mobile: args.mobile });
+            return text(`viewport set to ${args.width}x${args.height}${args.mobile ? " (mobile)" : ""}`);
+        case "veil_set_user_agent":
+            await p.setUserAgent(args.userAgent);
+            return text(`user-agent set`);
         case "veil_block_resources":
             await p.blockResources(args.types ?? [], { urls: args.urls });
             return text(`blocking ${(args.types ?? []).length} type(s), ${(args.urls ?? []).length} url pattern(s)`);
