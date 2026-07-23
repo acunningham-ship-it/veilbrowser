@@ -104,9 +104,10 @@ async function callTool(name: string, args: any): Promise<any> {
   }
   const p = await ensurePage();
   switch (name) {
-    case "veil_goto":
-      await p.goto(args.url, { waitUntil: args.waitUntil });
-      return text(`navigated to ${await p.url()}`);
+    case "veil_goto": {
+      const res = await p.goto(args.url, { waitUntil: args.waitUntil });
+      return text(`navigated to ${await p.url()}${res.status != null ? ` (HTTP ${res.status})` : ""}`);
+    }
     case "veil_reload":
       await p.reload({ waitUntil: args.waitUntil });
       return text(`reloaded ${await p.url()}`);

@@ -161,7 +161,11 @@ export declare class Page {
     goto(url: string, opts?: {
         timeout?: number;
         waitUntil?: "load" | "networkidle";
-    }): Promise<void>;
+    }): Promise<{
+        url: string;
+        status?: number;
+        ok?: boolean;
+    }>;
     /** Reload the current page (Page.reload), waiting per `waitUntil`. */
     reload(opts?: {
         timeout?: number;
@@ -187,8 +191,13 @@ export declare class Page {
      *  after `timeout`. Tracks in-flight requests over the Network domain — the
      *  right signal for SPAs whose content arrives after the load event. */
     private waitForNetworkIdle;
-    /** Evaluate JS in the page WITHOUT Runtime.enable (avoids the CDP tell). */
-    evaluate<T = any>(expression: string): Promise<T>;
+    /** Evaluate JS in the page WITHOUT Runtime.enable (avoids the CDP tell).
+     *  Bounded by `timeout` (default 30s): a wedged renderer — or an
+     *  awaitPromise expression that never settles — otherwise leaves this pending
+     *  forever, so we race the CDP send against a timer and reject cleanly. */
+    evaluate<T = any>(expression: string, opts?: {
+        timeout?: number;
+    }): Promise<T>;
     url(): Promise<string>;
     /** Build the numbered element index from the accessibility tree. */
     snapshot(): Promise<Snapshot>;
@@ -314,7 +323,9 @@ export declare class Page {
         pageRanges?: string;
         preferCSSPageSize?: boolean;
     }): Promise<Buffer>;
-    /** Poll an expression until truthy (replaces flaky fixed sleeps). */
+    /** Poll an expression until truthy (replaces flaky fixed sleeps). Each probe is
+     *  bounded by the time remaining, so a wedged page can't make waitFor overrun
+     *  its own timeout — it fails as a waitFor timeout, not a 30s evaluate hang. */
     waitFor(expression: string, opts?: {
         timeout?: number;
         poll?: number;
