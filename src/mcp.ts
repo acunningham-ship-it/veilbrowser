@@ -55,6 +55,10 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, selector: { type: "string", description: "CSS selector for the file input (default input[type=\"file\"])" } }, required: ["paths"] } },
   { name: "veil_upload_via_picker", description: "Attach files through a control that opens a file picker (SPAs like Gemini that create the <input> lazily on click). Pass the snapshot ref of the trigger element and absolute file paths.",
     inputSchema: { type: "object", properties: { triggerRef: { type: "number" }, paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, timeout: { type: "number", description: "ms to wait for the file chooser (default 15000)" } }, required: ["triggerRef", "paths"] } },
+  { name: "veil_text", description: "Read one element's rendered text (innerText) by snapshot ref — a price, status, or result cell — without dumping the whole page.",
+    inputSchema: { type: "object", properties: { ref: { type: "number" } }, required: ["ref"] } },
+  { name: "veil_attribute", description: "Read one attribute of an element by snapshot ref (e.g. href, value, aria-label, a data-* attribute). Returns the raw string, or null if absent.",
+    inputSchema: { type: "object", properties: { ref: { type: "number" }, name: { type: "string" } }, required: ["ref", "name"] } },
   { name: "veil_screenshot", description: "Capture a PNG screenshot of the page (returned as an image for vision).",
     inputSchema: { type: "object", properties: {} } },
   { name: "veil_eval", description: "Evaluate a JS expression in the page and return the value.",
@@ -122,6 +126,12 @@ async function callTool(name: string, args: any): Promise<any> {
     case "veil_upload_via_picker":
       await p.uploadViaPicker(args.triggerRef, args.paths, { timeout: args.timeout });
       return text(`uploaded ${args.paths.length} file(s) via picker`);
+    case "veil_text":
+      return text(await p.text(args.ref));
+    case "veil_attribute": {
+      const v = await p.attribute(args.ref, args.name);
+      return text(v === null ? "null" : v);
+    }
     case "veil_screenshot": {
       const png = await p.screenshot();
       return { content: [{ type: "image", data: png.toString("base64"), mimeType: "image/png" }] };

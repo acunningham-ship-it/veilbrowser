@@ -567,6 +567,22 @@ export class Page {
         return this.value;
       }`, [value]);
     }
+    /**
+     * Read one element's rendered text (innerText, falling back to textContent)
+     * by snapshot ref. Agents often want a single element's text — a price, a
+     * status, a result cell — not the whole-page innerText() dump.
+     */
+    async text(ref) {
+        return this.callOnRef(ref, `function(){ return this.innerText ?? this.textContent ?? ""; }`);
+    }
+    /**
+     * Read one attribute of an element by snapshot ref (e.g. `href`, `value`,
+     * `aria-label`, a `data-*`). Returns the raw attribute string, or null if the
+     * element has no such attribute.
+     */
+    async attribute(ref, name) {
+        return this.callOnRef(ref, `function(n){ return this.getAttribute(n); }`, [name]);
+    }
     /** Capture a PNG screenshot (Buffer) — feed to a vision model. Always the main
      *  page's viewport (Page.captureScreenshot isn't a per-frame concept), regardless
      *  of any active useFrame(). */
