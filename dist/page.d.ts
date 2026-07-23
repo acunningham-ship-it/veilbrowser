@@ -241,6 +241,27 @@ export declare class Page {
             height: number;
         };
     }): Promise<Buffer>;
+    /**
+     * Render the current page to a PDF (Buffer) via Page.printToPDF. NOTE: Chrome
+     * only supports PDF printing in HEADLESS mode — in headful it throws
+     * "PrintToPDF is not implemented". Options pass straight through to CDP
+     * (landscape, printBackground, scale, paperWidth/Height in inches, margin*,
+     * pageRanges, ...); printBackground defaults to true so backgrounds render.
+     * Always the main page, like screenshot().
+     */
+    pdf(opts?: {
+        landscape?: boolean;
+        printBackground?: boolean;
+        scale?: number;
+        paperWidth?: number;
+        paperHeight?: number;
+        marginTop?: number;
+        marginBottom?: number;
+        marginLeft?: number;
+        marginRight?: number;
+        pageRanges?: string;
+        preferCSSPageSize?: boolean;
+    }): Promise<Buffer>;
     /** Poll an expression until truthy (replaces flaky fixed sleeps). */
     waitFor(expression: string, opts?: {
         timeout?: number;

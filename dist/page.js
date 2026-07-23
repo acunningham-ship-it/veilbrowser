@@ -640,6 +640,18 @@ export class Page {
         const { data } = await this.cdp.send("Page.captureScreenshot", params, this.sessionId);
         return Buffer.from(data, "base64");
     }
+    /**
+     * Render the current page to a PDF (Buffer) via Page.printToPDF. NOTE: Chrome
+     * only supports PDF printing in HEADLESS mode — in headful it throws
+     * "PrintToPDF is not implemented". Options pass straight through to CDP
+     * (landscape, printBackground, scale, paperWidth/Height in inches, margin*,
+     * pageRanges, ...); printBackground defaults to true so backgrounds render.
+     * Always the main page, like screenshot().
+     */
+    async pdf(opts = {}) {
+        const { data } = await this.cdp.send("Page.printToPDF", { transferMode: "ReturnAsBase64", printBackground: opts.printBackground ?? true, ...opts }, this.sessionId);
+        return Buffer.from(data, "base64");
+    }
     /** Poll an expression until truthy (replaces flaky fixed sleeps). */
     async waitFor(expression, opts = {}) {
         const timeout = opts.timeout ?? 10000;
