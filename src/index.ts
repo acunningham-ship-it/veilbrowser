@@ -4,13 +4,14 @@ export { launchChrome, findChrome, type LaunchOptions } from "./launcher.js";
 export { CDP } from "./cdp.js";
 export { STEALTH_SOURCE } from "./stealth.js";
 export {
+  Fingerprint, // interface + namespace (Fingerprint.random / Fingerprint.presets)
+  PRESETS,
   buildFingerprintStealth,
   buildClientHints,
   buildAcceptLanguage,
   clientHintPlatform,
   chromeMajor,
   chromeFullVersion,
-  type Fingerprint,
   type FingerprintScreen,
   type FingerprintGeolocation,
 } from "./fingerprint.js";

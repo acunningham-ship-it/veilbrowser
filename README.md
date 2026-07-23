@@ -140,6 +140,23 @@ const browser = await Browser.launch({ headless: false, fingerprint: fp }); // a
 await page.applyFingerprint(fp);
 ```
 
+Don't want to hand-build one? Use a preset or a self-consistent random profile:
+
+```ts
+import { Browser, Fingerprint, PRESETS } from "@achamm/veilbrowser";
+
+await Browser.launch({ fingerprint: PRESETS["mac-chrome"] });   // windows/mac/linux/android-chrome
+await Browser.launch({ fingerprint: Fingerprint.random() });    // fresh coherent identity
+await Browser.launch({ fingerprint: Fingerprint.random(42) });  // deterministic given a seed
+```
+
+`Fingerprint.random(seed?)` picks a platform first, then derives a matching UA,
+client hints, WebGL, screen and timezone — so a random profile is as internally
+consistent as a preset. Each preset is a real Chrome-131 identity for its OS (an
+Apple-Silicon Mac still reports the frozen `Intel Mac OS X 10_15_7` UA + `MacIntel`
+platform with an `arm` architecture and an Apple Metal renderer — exactly as a real
+one does).
+
 **How it's applied (two layers).** The bulk goes through Chrome itself — `UA` +
 the full `userAgentMetadata` client hints + the legacy `navigator.platform`, the
 `screen` size + `devicePixelRatio`, and the **timezone / locale / geolocation** —
