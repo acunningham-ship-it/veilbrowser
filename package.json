@@ -5,6 +5,9 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "veil-mcp": "dist/mcp.js"
+  },
   "files": [
     "dist",
     "src",
@@ -13,7 +16,7 @@
   ],
   "scripts": {
     "selftest": "bun run examples/selftest.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && chmod +x dist/mcp.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test tests/*.test.ts",
     "prepublishOnly": "bun run build"
