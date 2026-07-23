@@ -310,9 +310,9 @@ We test before we claim.
 ## Use from an AI agent (MCP)
 
 Veil ships an MCP server (`src/mcp.ts`) — already wired into **persoje**
-(`~/.config/persoje/mcp.json`), exposing 32 tools: `goto`, `reload`, `back`, `forward`,
+(`~/.config/persoje/mcp.json`), exposing 33 tools: `goto`, `reload`, `back`, `forward`,
 `snapshot`, `click`, `fill`, `type`, `select`, `press`, `scroll`, `set_viewport`,
-`set_user_agent`, `block_resources`, `unblock_resources`, `wait_for`, `wait_for_selector`,
+`set_user_agent`, `set_fingerprint`, `block_resources`, `unblock_resources`, `wait_for`, `wait_for_selector`,
 `click_at`, `get_cookies`, `text`, `attribute`, `screenshot`, `eval`, `upload`,
 `upload_via_picker`, `pdf`, `fedcm_enable`, `fedcm_signin`, `drag`, `frames`, `use_frame`,
 `close`. Tool-execution failures come

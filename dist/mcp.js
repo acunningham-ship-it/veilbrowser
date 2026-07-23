@@ -16,6 +16,7 @@ import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Browser } from "./browser.js";
+import { PRESETS, Fingerprint } from "./fingerprint.js";
 let browser = null;
 let page = null;
 async function ensurePage() {
@@ -55,6 +56,13 @@ const TOOLS = [
         inputSchema: { type: "object", properties: { width: { type: "number" }, height: { type: "number" }, deviceScaleFactor: { type: "number", description: "device pixel ratio (default 1)" }, mobile: { type: "boolean", description: "mobile emulation (default false)" } }, required: ["width", "height"] } },
     { name: "veil_set_user_agent", description: "Override the User-Agent at runtime, keeping the Sec-CH-UA client-hint brands aligned with it (a bare UA with mismatched hints is a fingerprint tell).",
         inputSchema: { type: "object", properties: { userAgent: { type: "string" } }, required: ["userAgent"] } },
+    { name: "veil_set_fingerprint", description: "Apply a COHERENT fingerprint/profile — UA + client hints + navigator.platform, screen, timezone/locale/geolocation, WebGL vendor/renderer, and seeded canvas/audio noise, all internally consistent. Pass a preset name, random:true (+ optional seed for a deterministic identity), or a full fingerprint object. Call this BEFORE veil_goto for full effect: the injected values take hold on the next navigation; the UA/client-hint/timezone/screen overrides apply immediately. This is coherent identity control, not a magic bullet.",
+        inputSchema: { type: "object", properties: {
+                preset: { type: "string", enum: Object.keys(PRESETS), description: "a ready-made profile" },
+                random: { type: "boolean", description: "build a self-consistent random desktop profile" },
+                seed: { type: "number", description: "seed for random (deterministic); implies random" },
+                fingerprint: { type: "object", description: "a full Fingerprint object (advanced; must be internally consistent)" },
+            } } },
     { name: "veil_block_resources", description: "Block resource loads to speed up scraping and shrink your footprint — by type (image, font, media, stylesheet, script, xhr, fetch, document, websocket, ...) and/or by URL substring. Calls accumulate; coexists with the private-network guard. Lift with veil_unblock_resources.",
         inputSchema: { type: "object", properties: { types: { type: "array", items: { type: "string" }, description: 'resource types to block, e.g. ["image","font","media"]' }, urls: { type: "array", items: { type: "string" }, description: 'URL substrings to block, e.g. ["analytics","doubleclick"]' } } } },
     { name: "veil_unblock_resources", description: "Lift all resource blocking set by veil_block_resources (leaves the private-network guard untouched).",
@@ -143,6 +151,22 @@ async function callTool(name, args) {
         case "veil_set_user_agent":
             await p.setUserAgent(args.userAgent);
             return text(`user-agent set`);
+        case "veil_set_fingerprint": {
+            let fp;
+            if (args.fingerprint)
+                fp = args.fingerprint;
+            else if (args.preset) {
+                fp = PRESETS[args.preset];
+                if (!fp)
+                    throw new Error(`unknown preset "${args.preset}" (known: ${Object.keys(PRESETS).join(", ")})`);
+            }
+            else if (args.random || args.seed != null)
+                fp = Fingerprint.random(args.seed);
+            else
+                throw new Error("veil_set_fingerprint: provide a preset name, random:true (+optional seed), or a full fingerprint object");
+            await p.applyFingerprint(fp);
+            return text(`fingerprint applied: ${fp.platform} — ${fp.userAgent}`);
+        }
         case "veil_block_resources":
             await p.blockResources(args.types ?? [], { urls: args.urls });
             return text(`blocking ${(args.types ?? []).length} type(s), ${(args.urls ?? []).length} url pattern(s)`);
