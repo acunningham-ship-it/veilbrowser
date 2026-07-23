@@ -108,6 +108,54 @@ await browser.close();
 5. **Human input (`human.ts`)** — seedable PRNG drives curved mouse paths and
    jittered keystroke timing.
 
+## Coherent fingerprints / profiles
+
+By default Veil ships your *real* Chrome fingerprint — the strongest identity there
+is, because nothing is spoofed. When you instead need to present a **specific**
+identity (a Windows profile from a Linux server, a fixed profile across a pool),
+apply a `Fingerprint`. The design rule is **coherence, not spoof-count**: a
+half-spoofed profile is *worse* than none — if the UA says Windows but the client
+hints, `navigator.platform`, or WebGL vendor disagree, that contradiction is itself
+a detection signal. So a `Fingerprint` is applied as one internally-consistent set,
+and every derived value (client-hint platform, brand versions, Accept-Language) is
+computed *from* the profile so nothing can drift out of agreement.
+
+```ts
+import { Browser, type Fingerprint } from "@achamm/veilbrowser";
+
+const fp: Fingerprint = {
+  userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+             "(KHTML, like Gecko) Chrome/131.0.6778.86 Safari/537.36",
+  platform: "Win32", platformVersion: "15.0.0", architecture: "x86", model: "", mobile: false,
+  hardwareConcurrency: 16, deviceMemory: 8, languages: ["en-US", "en"],
+  screen: { width: 2560, height: 1440, availWidth: 2560, availHeight: 1400, colorDepth: 24 },
+  devicePixelRatio: 1,
+  webglVendor: "Google Inc. (NVIDIA)",
+  webglRenderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+  timezone: "America/New_York", locale: "en-US", seed: 12345,
+};
+
+const browser = await Browser.launch({ headless: false, fingerprint: fp }); // applied to every page
+// or at runtime, before the first navigation:
+await page.applyFingerprint(fp);
+```
+
+**How it's applied (two layers).** The bulk goes through Chrome itself — `UA` +
+the full `userAgentMetadata` client hints + the legacy `navigator.platform`, and
+the `screen` size + `devicePixelRatio`, via CDP `Emulation.*`. These are set by the
+browser, so there is **no JS getter to unmask** — the strongest kind of spoof. Only
+the handful of values CDP can't set (`hardwareConcurrency`, `deviceMemory`,
+`languages`, `screen.avail*`/colour depth) are injected as getters — each defined on
+the *prototype* (inherited, so no own-property tell) with its `toString()` masked to
+`[native code]`, the same discipline the base stealth uses.
+
+Honest scope: this is **coherent fingerprint control**, not a magic bullet. It lets
+you present a consistent identity; it does not by itself defeat any particular hard
+target. `navigator.oscpu` is deliberately left unset (it's Firefox-only — a Chrome
+profile exposing it would be an anomaly), and `screen.colorDepth` follows the profile
+but the *rendered* pixels still come from the host GPU, so keep `webglVendor`/
+`webglRenderer` plausible for the platform you're claiming.
+
 ## Agent tooling (the other half of the product)
 
 The selling point isn't only stealth — it's that agents drive it *well*:

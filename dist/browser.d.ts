@@ -8,6 +8,7 @@ export declare class Browser {
     private cdp;
     private launch;
     private blockPrivate;
+    private fingerprint?;
     private constructor();
     static launch(opts?: LaunchOptions): Promise<Browser>;
     /** Open a fresh tab and return an initialised Page. */

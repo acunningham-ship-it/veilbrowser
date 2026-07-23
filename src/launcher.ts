@@ -12,6 +12,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { Fingerprint } from "./fingerprint.js";
 
 const CANDIDATES = [
   process.env.VEIL_CHROME,
@@ -68,6 +69,12 @@ export interface LaunchOptions {
    */
   xvfb?: boolean;
   extraArgs?: string[];
+  /**
+   * A coherent {@link Fingerprint} to apply to every page at creation (before its
+   * first navigation). Consumed by Browser/Page, not by the Chrome launch itself
+   * — launchChrome ignores it. See Page.applyFingerprint().
+   */
+  fingerprint?: Fingerprint;
 }
 
 const RENDER_NODE = "/dev/dri/renderD128";

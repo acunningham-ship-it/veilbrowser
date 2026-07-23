@@ -9,6 +9,7 @@
  */
 import type { CDP } from "./cdp.js";
 import { buildStealth } from "./stealth.js";
+import { buildFingerprintStealth, buildClientHints, buildAcceptLanguage, type Fingerprint } from "./fingerprint.js";
 import { Rng, mousePath, moveDelay, keyDelay, sleep, type Point } from "./human.js";
 
 export interface Element {
@@ -212,6 +213,8 @@ export class Page {
   // answer the same paused request and the second continue/fail fails with
   // "Invalid InterceptionId". applyFetchInterception() reconciles both.
   private blockPrivateOn = false;
+  // The active coherent identity, if applyFingerprint()/launch({fingerprint}) set one.
+  private fingerprint?: Fingerprint;
   private blockedResourceTypes = new Set<string>(); // CDP ResourceType values, e.g. "Image"
   private blockedUrlSubstrings: string[] = [];
   private fetchOff?: () => void; // tears down the shared requestPaused + frameNavigated listeners
@@ -227,16 +230,21 @@ export class Page {
   }
 
   /** Enable the domains we use and arm stealth injection on every document. */
-  async init(opts: { maskWebgl?: boolean; blockPrivateNetwork?: boolean } = {}) {
+  async init(opts: { maskWebgl?: boolean; blockPrivateNetwork?: boolean; fingerprint?: Fingerprint } = {}) {
     await this.send("Page.enable");
     await this.send("DOM.enable");
     await this.send("Accessibility.enable");
-    await this.normalizeUserAgent();
+    // A fingerprint owns the UA + client hints; without one, just scrub any
+    // leaked HeadlessChrome token from the real UA.
+    if (!opts.fingerprint) await this.normalizeUserAgent();
     // Inject stealth before any page script runs, on every navigation/frame.
     // Only mask WebGL on SwiftShader hosts; with a real GPU the authentic vendor
     // is consistent and masking it would be a detectable lie.
     const source = buildStealth({ maskWebgl: opts.maskWebgl ?? false });
     await this.send("Page.addScriptToEvaluateOnNewDocument", { source });
+    // Apply the fingerprint AFTER the base stealth so its masked getters win over
+    // any self-gating backfill, and before the first navigation.
+    if (opts.fingerprint) await this.applyFingerprint(opts.fingerprint);
     if (opts.blockPrivateNetwork) await this.blockPrivateNetwork();
     // Auto-attach to cross-origin child iframes of THIS page (scoped by sessionId
     // on the command envelope, same as every other domain-enable here) so their
@@ -375,6 +383,52 @@ export class Page {
    */
   async setUserAgent(userAgent: string) {
     await this.applyUserAgentOverride(userAgent);
+  }
+
+  /**
+   * Apply a coherent {@link Fingerprint} to this page. Two layers (see
+   * fingerprint.ts): the CLEAN browser-level CDP overrides — UA + the full
+   * `userAgentMetadata` client hints + the legacy `navigator.platform`, and the
+   * screen dimensions + `devicePixelRatio` — plus a masked page-level getter
+   * script for the values CDP can't reach (`hardwareConcurrency`, `deviceMemory`,
+   * `languages`, and `screen.avail*` / colour depth).
+   *
+   * Coherence is the whole point: every derived value (client-hint platform,
+   * brand versions, Accept-Language) is computed FROM the profile, so the UA,
+   * client hints, `navigator.platform` and screen can't drift out of agreement —
+   * an inconsistency between them is itself a detection signal.
+   *
+   * Apply it BEFORE the first navigation for full effect: the injected getters
+   * take hold on the next document, the CDP overrides on subsequent requests.
+   * `Browser.launch({ fingerprint })` wires this in automatically at page
+   * creation. (Timezone/locale/geolocation and WebGL/canvas/audio noise are
+   * layered on by later methods.)
+   */
+  async applyFingerprint(fp: Fingerprint) {
+    this.fingerprint = fp;
+    // 1. UA + client hints. The top-level `platform` ALSO sets the legacy
+    //    navigator.platform, so it needs no injected getter (cleaner — a
+    //    browser-level value has no getter a page can unmask).
+    await this.send("Emulation.setUserAgentOverride", {
+      userAgent: fp.userAgent,
+      acceptLanguage: buildAcceptLanguage(fp.languages),
+      platform: fp.platform,
+      userAgentMetadata: buildClientHints(fp),
+    });
+    // 2. screen dimensions + devicePixelRatio, WITHOUT touching the viewport
+    //    (width/height:0 leave window.innerWidth/Height alone). availWidth/
+    //    availHeight/colorDepth aren't settable this way — the injected getters
+    //    below carry them.
+    await this.send("Emulation.setDeviceMetricsOverride", {
+      width: 0,
+      height: 0,
+      deviceScaleFactor: fp.devicePixelRatio,
+      mobile: fp.mobile,
+      screenWidth: fp.screen.width,
+      screenHeight: fp.screen.height,
+    });
+    // 3. the masked page-level getter layer, armed on every future document.
+    await this.send("Page.addScriptToEvaluateOnNewDocument", { source: buildFingerprintStealth(fp) });
   }
 
   /**

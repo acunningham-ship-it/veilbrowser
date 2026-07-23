@@ -9,6 +9,7 @@
  * We launch with the flags a normal Chrome uses, minus the noise.
  */
 import { type ChildProcess } from "node:child_process";
+import type { Fingerprint } from "./fingerprint.js";
 export declare function findChrome(): string;
 export interface LaunchOptions {
     headless?: boolean;
@@ -55,6 +56,12 @@ export interface LaunchOptions {
      */
     xvfb?: boolean;
     extraArgs?: string[];
+    /**
+     * A coherent {@link Fingerprint} to apply to every page at creation (before its
+     * first navigation). Consumed by Browser/Page, not by the Chrome launch itself
+     * — launchChrome ignores it. See Page.applyFingerprint().
+     */
+    fingerprint?: Fingerprint;
 }
 export interface LaunchResult {
     webSocketDebuggerUrl: string;
