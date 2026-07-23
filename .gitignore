@@ -27,3 +27,6 @@ examples/amazon_check.ts
 examples/fetchdoc.ts
 examples/gabb_research.ts
 examples/ig_trail.ts
+
+# local agent worktrees / session state
+.claude/

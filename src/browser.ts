@@ -5,12 +5,14 @@
 import { launchChrome, type LaunchOptions, type LaunchResult } from "./launcher.js";
 import { CDP } from "./cdp.js";
 import { Page } from "./page.js";
+import type { Fingerprint } from "./fingerprint.js";
 
 export class Browser {
   private constructor(
     private cdp: CDP,
     private launch: LaunchResult,
     private blockPrivate: boolean,
+    private fingerprint?: Fingerprint,
   ) {}
 
   static async launch(opts: LaunchOptions = {}): Promise<Browser> {
@@ -18,7 +20,9 @@ export class Browser {
     const cdp = await CDP.connect(launch.webSocketDebuggerUrl);
     // Default ON: a stealth browser shouldn't let visited sites port-scan your
     // localhost/LAN. Opt out with { blockPrivateNetwork: false }.
-    return new Browser(cdp, launch, opts.blockPrivateNetwork ?? true);
+    // A `fingerprint`, if given, is applied to every page at creation so a
+    // coherent identity is in place before the first navigation.
+    return new Browser(cdp, launch, opts.blockPrivateNetwork ?? true, opts.fingerprint);
   }
 
   /** Open a fresh tab and return an initialised Page. */
@@ -29,7 +33,11 @@ export class Browser {
       flatten: true,
     });
     const page = new Page(this.cdp, sessionId, targetId);
-    await page.init({ maskWebgl: this.launch.maskWebgl, blockPrivateNetwork: this.blockPrivate });
+    await page.init({
+      maskWebgl: this.launch.maskWebgl,
+      blockPrivateNetwork: this.blockPrivate,
+      fingerprint: this.fingerprint,
+    });
     return page;
   }
 

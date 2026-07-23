@@ -8,6 +8,7 @@
  * acts on a stable integer `ref`; we resolve the geometry and drive real input.
  */
 import type { CDP } from "./cdp.js";
+import { type Fingerprint } from "./fingerprint.js";
 import { type Point } from "./human.js";
 export interface Element {
     ref: number;
@@ -79,6 +80,7 @@ export declare class Page {
     private fedcmWaiters;
     private lastFedcmDialogId?;
     private blockPrivateOn;
+    private fingerprint?;
     private blockedResourceTypes;
     private blockedUrlSubstrings;
     private fetchOff?;
@@ -89,6 +91,7 @@ export declare class Page {
     init(opts?: {
         maskWebgl?: boolean;
         blockPrivateNetwork?: boolean;
+        fingerprint?: Fingerprint;
     }): Promise<void>;
     /** Drop a dead child-frame session (its iframe unmounted or navigated). If it
      *  was the active target, fall back to the main page and clear now-meaningless
@@ -137,6 +140,26 @@ export declare class Page {
      * mismatched hints is a fingerprint tell). Applies to subsequent requests.
      */
     setUserAgent(userAgent: string): Promise<void>;
+    /**
+     * Apply a coherent {@link Fingerprint} to this page. Two layers (see
+     * fingerprint.ts): the CLEAN browser-level CDP overrides — UA + the full
+     * `userAgentMetadata` client hints + the legacy `navigator.platform`, and the
+     * screen dimensions + `devicePixelRatio` — plus a masked page-level getter
+     * script for the values CDP can't reach (`hardwareConcurrency`, `deviceMemory`,
+     * `languages`, and `screen.avail*` / colour depth).
+     *
+     * Coherence is the whole point: every derived value (client-hint platform,
+     * brand versions, Accept-Language) is computed FROM the profile, so the UA,
+     * client hints, `navigator.platform` and screen can't drift out of agreement —
+     * an inconsistency between them is itself a detection signal.
+     *
+     * Apply it BEFORE the first navigation for full effect: the injected getters
+     * take hold on the next document, the CDP overrides on subsequent requests.
+     * `Browser.launch({ fingerprint })` wires this in automatically at page
+     * creation. (Timezone/locale/geolocation and WebGL/canvas/audio noise are
+     * layered on by later methods.)
+     */
+    applyFingerprint(fp: Fingerprint): Promise<void>;
     /**
      * Set the viewport (and optionally device pixel ratio / mobile emulation) via
      * Emulation.setDeviceMetricsOverride — the page sees this as its
