@@ -1,33 +1,3 @@
-/**
- * Coherent fingerprint / profile system.
- *
- * THE GOLDEN RULE here is coherence, not spoof-count. A half-spoofed fingerprint
- * is WORSE than none: if `navigator.userAgent` says Chrome on Windows but the
- * client-hints / `navigator.platform` / WebGL vendor disagree, that very
- * INCONSISTENCY is a detection signal. So a `Fingerprint` is applied as one
- * internally-consistent set, and every derived value (client-hint platform,
- * brand versions, accept-language) is computed FROM the profile so nothing can
- * drift out of agreement.
- *
- * Two application layers, by design:
- *   1. Browser-level (CDP `Emulation.*`) — the CLEAN layer. `setUserAgentOverride`
- *      (UA + full `userAgentMetadata` + the legacy `navigator.platform`),
- *      `setDeviceMetricsOverride` (screen dims + devicePixelRatio),
- *      `setTimezoneOverride`, `setLocaleOverride`, `setGeolocationOverride`.
- *      These are set by Chrome itself, so there is NO JS getter to unmask —
- *      the strongest possible spoof.
- *   2. Page-level (injected getters) — only the handful of values CDP can't set:
- *      `navigator.hardwareConcurrency` / `deviceMemory` / `languages`, the
- *      `screen.avail*` / colour depth, and (later) WebGL/canvas/audio. Every one
- *      is defined on the PROTOTYPE (inherited, never an own-property tell) and its
- *      `toString()` is masked to `[native code]` so the override can't be read
- *      back as patched — the same discipline `stealth.ts` uses.
- *
- * `navigator.oscpu` is intentionally NOT applied: it is a Firefox-only property.
- * A Chrome UA that also exposed `navigator.oscpu` would be an anomaly in itself,
- * so the field exists on the type for completeness but is ignored on Chrome
- * profiles (see buildFingerprintStealth).
- */
 /** Screen geometry a page can read (screen.* + the avail inset for a taskbar/menubar). */
 export interface FingerprintScreen {
     width: number;
@@ -147,3 +117,26 @@ export declare function buildAcceptLanguage(languages: string[]): string;
  * Values are inlined as JSON so the emitted script has no free variables.
  */
 export declare function buildFingerprintStealth(fp: Fingerprint): string;
+/**
+ * Ready-made, internally-consistent profiles. Each is a REAL Chrome-131 identity
+ * for its OS — the UA, client-hint platform/arch, legacy navigator.platform,
+ * WebGL vendor/renderer, screen and DPR all agree (e.g. an Apple-Silicon Mac
+ * still reports the frozen "Intel Mac OS X 10_15_7" UA + "MacIntel" platform with
+ * an "arm" architecture and an Apple Metal renderer — exactly as a real one does).
+ * Use one directly, or as the coherent base for `Fingerprint.random`.
+ */
+export declare const PRESETS: Record<string, Fingerprint>;
+export declare namespace Fingerprint {
+    /** The named presets, also reachable as `Fingerprint.presets`. */
+    const presets: Record<string, Fingerprint>;
+    /**
+     * Build a SELF-CONSISTENT random desktop profile. It picks a platform first
+     * (windows/mac/linux) — a full coherent preset — then varies only fields that
+     * are independent of the UA (screen resolution from that OS's realistic set,
+     * hardwareConcurrency, US timezone + matching coordinates). The coherence-
+     * critical core (UA, client hints, navigator.platform, WebGL) comes straight
+     * from the preset, so a randomized profile passes the same consistency checks.
+     * Deterministic given a `seed`; omit it for a fresh random identity.
+     */
+    function random(seed?: number): Fingerprint;
+}

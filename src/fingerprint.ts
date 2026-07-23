@@ -28,6 +28,7 @@
  * so the field exists on the type for completeness but is ignored on Chrome
  * profiles (see buildFingerprintStealth).
  */
+import { Rng } from "./human.js";
 
 /** Screen geometry a page can read (screen.* + the avail inset for a taskbar/menubar). */
 export interface FingerprintScreen {
@@ -340,4 +341,157 @@ export function buildFingerprintStealth(fp: Fingerprint): string {
   } catch (e) {}
 })();
 `;
+}
+
+// --- Preset profiles + consistent randomizer --------------------------------
+
+/**
+ * Ready-made, internally-consistent profiles. Each is a REAL Chrome-131 identity
+ * for its OS — the UA, client-hint platform/arch, legacy navigator.platform,
+ * WebGL vendor/renderer, screen and DPR all agree (e.g. an Apple-Silicon Mac
+ * still reports the frozen "Intel Mac OS X 10_15_7" UA + "MacIntel" platform with
+ * an "arm" architecture and an Apple Metal renderer — exactly as a real one does).
+ * Use one directly, or as the coherent base for `Fingerprint.random`.
+ */
+export const PRESETS: Record<string, Fingerprint> = {
+  "windows-chrome": {
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.86 Safari/537.36",
+    platform: "Win32",
+    platformVersion: "15.0.0",
+    architecture: "x86",
+    bitness: "64",
+    model: "",
+    mobile: false,
+    hardwareConcurrency: 16,
+    deviceMemory: 8,
+    languages: ["en-US", "en"],
+    screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24 },
+    devicePixelRatio: 1,
+    webglVendor: "Google Inc. (Intel)",
+    webglRenderer: "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    timezone: "America/New_York",
+    locale: "en-US",
+    geolocation: { latitude: 40.7128, longitude: -74.006, accuracy: 60 },
+    seed: 0x5717_0001,
+  },
+  "mac-chrome": {
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.86 Safari/537.36",
+    platform: "MacIntel",
+    platformVersion: "14.6.0",
+    architecture: "arm",
+    bitness: "64",
+    model: "",
+    mobile: false,
+    hardwareConcurrency: 10,
+    deviceMemory: 8,
+    languages: ["en-US", "en"],
+    screen: { width: 1512, height: 982, availWidth: 1512, availHeight: 944, colorDepth: 30 },
+    devicePixelRatio: 2,
+    webglVendor: "Google Inc. (Apple)",
+    webglRenderer: "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+    timezone: "America/Los_Angeles",
+    locale: "en-US",
+    geolocation: { latitude: 34.0522, longitude: -118.2437, accuracy: 60 },
+    seed: 0x5717_0002,
+  },
+  "linux-chrome": {
+    userAgent:
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.86 Safari/537.36",
+    platform: "Linux x86_64",
+    platformVersion: "", // real Chrome on Linux sends an empty Sec-CH-UA-Platform-Version
+    architecture: "x86",
+    bitness: "64",
+    model: "",
+    mobile: false,
+    hardwareConcurrency: 8,
+    deviceMemory: 8,
+    languages: ["en-US", "en"],
+    screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1053, colorDepth: 24 },
+    devicePixelRatio: 1,
+    webglVendor: "Google Inc. (Intel)",
+    webglRenderer: "ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL 4.6)",
+    timezone: "America/New_York",
+    locale: "en-US",
+    geolocation: { latitude: 40.7128, longitude: -74.006, accuracy: 60 },
+    seed: 0x5717_0003,
+  },
+  "android-chrome": {
+    userAgent:
+      "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.86 Mobile Safari/537.36",
+    platform: "Linux armv8l",
+    platformVersion: "14.0.0",
+    architecture: "arm",
+    bitness: "64",
+    model: "Pixel 8",
+    mobile: true,
+    hardwareConcurrency: 8,
+    deviceMemory: 8,
+    languages: ["en-US", "en"],
+    screen: { width: 412, height: 915, availWidth: 412, availHeight: 915, colorDepth: 24 },
+    devicePixelRatio: 2.625,
+    webglVendor: "Google Inc. (Qualcomm)",
+    webglRenderer: "ANGLE (Qualcomm, Adreno (TM) 730, OpenGL ES 3.2)",
+    timezone: "America/New_York",
+    locale: "en-US",
+    geolocation: { latitude: 40.7128, longitude: -74.006, accuracy: 60 },
+    seed: 0x5717_0004,
+  },
+};
+
+// Realistic per-OS screen options for the randomizer (avail leaves room for a
+// taskbar / menubar+dock). DPR + colour depth stay with the chosen preset.
+const SCREEN_SETS: Record<string, FingerprintScreen[]> = {
+  Windows: [
+    { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24 },
+    { width: 1366, height: 768, availWidth: 1366, availHeight: 728, colorDepth: 24 },
+    { width: 2560, height: 1440, availWidth: 2560, availHeight: 1400, colorDepth: 24 },
+    { width: 1536, height: 864, availWidth: 1536, availHeight: 824, colorDepth: 24 },
+  ],
+  macOS: [
+    { width: 1512, height: 982, availWidth: 1512, availHeight: 944, colorDepth: 30 },
+    { width: 1440, height: 900, availWidth: 1440, availHeight: 862, colorDepth: 30 },
+    { width: 1728, height: 1117, availWidth: 1728, availHeight: 1079, colorDepth: 30 },
+  ],
+  Linux: [
+    { width: 1920, height: 1080, availWidth: 1920, availHeight: 1053, colorDepth: 24 },
+    { width: 1366, height: 768, availWidth: 1366, availHeight: 741, colorDepth: 24 },
+  ],
+};
+
+const US_TIMEZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles"];
+const TZ_COORDS: Record<string, FingerprintGeolocation> = {
+  "America/New_York": { latitude: 40.7128, longitude: -74.006, accuracy: 60 },
+  "America/Chicago": { latitude: 41.8781, longitude: -87.6298, accuracy: 60 },
+  "America/Denver": { latitude: 39.7392, longitude: -104.9903, accuracy: 60 },
+  "America/Los_Angeles": { latitude: 34.0522, longitude: -118.2437, accuracy: 60 },
+};
+
+// Interface + namespace merge: `Fingerprint` is still the type, and
+// `Fingerprint.random(...)` / `Fingerprint.presets` are its value side.
+export namespace Fingerprint {
+  /** The named presets, also reachable as `Fingerprint.presets`. */
+  export const presets = PRESETS;
+
+  /**
+   * Build a SELF-CONSISTENT random desktop profile. It picks a platform first
+   * (windows/mac/linux) — a full coherent preset — then varies only fields that
+   * are independent of the UA (screen resolution from that OS's realistic set,
+   * hardwareConcurrency, US timezone + matching coordinates). The coherence-
+   * critical core (UA, client hints, navigator.platform, WebGL) comes straight
+   * from the preset, so a randomized profile passes the same consistency checks.
+   * Deterministic given a `seed`; omit it for a fresh random identity.
+   */
+  export function random(seed: number = (Date.now() ^ ((Math.random() * 0xffffffff) | 0)) >>> 0): Fingerprint {
+    const rng = new Rng((seed >>> 0) || 1);
+    const keys = ["windows-chrome", "mac-chrome", "linux-chrome"];
+    const base = PRESETS[keys[rng.int(0, keys.length - 1)]!]!;
+    const chPlatform = clientHintPlatform(base);
+    const screens = SCREEN_SETS[chPlatform] ?? [base.screen];
+    const screen = { ...screens[rng.int(0, screens.length - 1)]! };
+    const cores = [4, 8, 12, 16][rng.int(0, 3)]!;
+    const tz = US_TIMEZONES[rng.int(0, US_TIMEZONES.length - 1)]!;
+    return { ...base, hardwareConcurrency: cores, screen, timezone: tz, geolocation: TZ_COORDS[tz], seed: seed >>> 0 };
+  }
 }
