@@ -534,6 +534,33 @@ export class Page {
         throw new Error(`waitFor timed out: ${expression}`);
     }
     /**
+     * Poll until a CSS selector matches — the selector-shaped convenience over
+     * waitFor(), for the common "wait for this element to appear" case. With
+     * {visible:true} it also requires a non-zero layout box and a visible
+     * computed style (not display:none / visibility:hidden), so an element that
+     * exists in the DOM but is still hidden doesn't resolve early. Throws a
+     * selector-named error on timeout.
+     */
+    async waitForSelector(selector, opts = {}) {
+        const timeout = opts.timeout ?? 10000;
+        const visible = opts.visible ?? false;
+        const sel = JSON.stringify(selector);
+        const expr = visible
+            ? `(() => { const el = document.querySelector(${sel}); if (!el) return false;` +
+                ` const r = el.getBoundingClientRect(); const s = getComputedStyle(el);` +
+                ` return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none"; })()`
+            : `document.querySelector(${sel})`;
+        try {
+            await this.waitFor(expr, { timeout, poll: opts.poll });
+        }
+        catch (e) {
+            if (String(e?.message ?? "").includes("waitFor timed out")) {
+                throw new Error(`waitForSelector: "${selector}" not found${visible ? " (visible)" : ""} within ${timeout}ms`);
+            }
+            throw e;
+        }
+    }
+    /**
      * Attach local files to a file `<input>` — even a hidden one — without an OS
      * file picker. Uses CDP DOM.setFileInputFiles (the same primitive Playwright
      * uses under the hood), which sets `input.files` and fires `change` directly.
