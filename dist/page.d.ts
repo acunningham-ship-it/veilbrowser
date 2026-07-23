@@ -78,7 +78,10 @@ export declare class Page {
     private fedcmQueue;
     private fedcmWaiters;
     private lastFedcmDialogId?;
-    private blockPrivateOff?;
+    private blockPrivateOn;
+    private blockedResourceTypes;
+    private blockedUrlSubstrings;
+    private fetchOff?;
     private mainFrameId?;
     private topPrivate;
     constructor(cdp: CDP, sessionId: string, targetId?: string | undefined);
@@ -328,8 +331,35 @@ export declare class Page {
      * localhost resources — only a PUBLIC page reaching a private host is blocked.
      */
     blockPrivateNetwork(): Promise<void>;
-    /** Lift the private-network block (re-allows localhost/LAN requests). */
+    /** Lift the private-network block (re-allows localhost/LAN requests). Leaves any
+     *  resource blocking in place. */
     unblockPrivateNetwork(): Promise<void>;
+    /**
+     * Block resource loads — a big speed and footprint win for scraping. Block by
+     * type (`["image","font","media","stylesheet"]`) and/or by URL substring
+     * (`{ urls: ["analytics","doubleclick"] }`); matching requests are failed via
+     * CDP's Fetch domain. Calls accumulate. Coexists with the private-network guard
+     * (both share one interception handler). Lift it all with unblockResources().
+     * Types accept friendly names (image, font, media, stylesheet, script, xhr,
+     * fetch, document, websocket, ...).
+     */
+    blockResources(types?: string[], opts?: {
+        urls?: string[];
+    }): Promise<void>;
+    /** Lift resource blocking (leaves the private-network guard untouched). */
+    unblockResources(): Promise<void>;
+    /** The union of Fetch patterns for whatever guards are currently active. Only
+     *  matching requests get paused, so anything unblocked keeps its exact timing. */
+    private fetchPatterns;
+    /** Decide the fate of one paused request against every active guard, in one
+     *  place. Commands target this.sessionId explicitly: requestPaused fires on the
+     *  MAIN session and may arrive after a useFrame() repointed activeSessionId, and
+     *  a continue/fail sent to the wrong session can't find the requestId (hang). */
+    private handleFetchPaused;
+    /** (Re)configure the shared Fetch interception for the currently-active guards:
+     *  register the single requestPaused + frameNavigated listeners once, enable
+     *  Fetch with the union of patterns, and fully tear down when nothing is active. */
+    private applyFetchInterception;
     /** Close this page and detach its target from the browser. Idempotent. */
     close(): Promise<void>;
 }
