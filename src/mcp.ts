@@ -43,6 +43,8 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { dx: { type: "number", description: "horizontal pixels (default 0)" }, dy: { type: "number", description: "vertical pixels (positive = down)" } }, required: ["dy"] } },
   { name: "veil_wait_for", description: "Poll a JS expression in the page until it is truthy, instead of a fixed sleep — e.g. \"document.querySelector('.results')\". Returns when the condition holds; errors on timeout.",
     inputSchema: { type: "object", properties: { expression: { type: "string" }, timeout: { type: "number", description: "ms before giving up (default 10000)" }, poll: { type: "number", description: "ms between checks (default 100)" } }, required: ["expression"] } },
+  { name: "veil_wait_for_selector", description: "Poll until a CSS selector matches, then return (the selector-shaped convenience over veil_wait_for). Pass visible:true to also require the element to be laid out and not display:none/visibility:hidden. Errors on timeout.",
+    inputSchema: { type: "object", properties: { selector: { type: "string" }, timeout: { type: "number", description: "ms before giving up (default 10000)" }, visible: { type: "boolean", description: "also require the element to be visibly rendered (default false)" } }, required: ["selector"] } },
   { name: "veil_click_at", description: "Trusted click at absolute viewport coordinates (x, y). Use when there is no snapshot ref to target — a canvas, map, or custom widget.",
     inputSchema: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"] } },
   { name: "veil_get_cookies", description: "Return the browser's current cookies as JSON (name, value, domain, path, expires, httpOnly, secure, sameSite, ...). Symmetric with cookie injection. Optionally pass `urls` to scope the read to specific origins.",
@@ -102,6 +104,9 @@ async function callTool(name: string, args: any): Promise<any> {
     case "veil_wait_for":
       await p.waitFor(args.expression, { timeout: args.timeout, poll: args.poll });
       return text(`condition met: ${args.expression}`);
+    case "veil_wait_for_selector":
+      await p.waitForSelector(args.selector, { timeout: args.timeout, visible: args.visible });
+      return text(`selector matched: ${args.selector}`);
     case "veil_click_at":
       await p.clickAt(args.x, args.y);
       return text(`clicked at (${args.x}, ${args.y})`);
