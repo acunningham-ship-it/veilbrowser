@@ -573,6 +573,66 @@ export class Page {
     await this.type(text);
   }
 
+  /** Resolve a snapshot ref to a live JS object handle (objectId) — the bridge
+   *  from an accessibility-tree ref to callFunctionOn, so we can read/drive one
+   *  specific element instead of the whole page. */
+  private async resolveRefObject(ref: number): Promise<string> {
+    const target = this.refs.get(ref);
+    if (!target) throw new Error(`No element with ref ${ref}. Call snapshot() first.`);
+    const { object } = await this.send("DOM.resolveNode", { backendNodeId: target.backendNodeId });
+    if (!object?.objectId) throw new Error(`Could not resolve ref ${ref} to a live node (it may have detached).`);
+    return object.objectId;
+  }
+
+  /** Call a function with `this` bound to the element behind a snapshot ref and
+   *  return its by-value result. Uses Runtime.callFunctionOn (no Runtime.enable
+   *  needed) and always releases the node handle so it can't leak. */
+  private async callOnRef<T = any>(ref: number, fn: string, args: any[] = []): Promise<T> {
+    const objectId = await this.resolveRefObject(ref);
+    try {
+      const r = await this.send("Runtime.callFunctionOn", {
+        objectId,
+        functionDeclaration: fn,
+        arguments: args.map((value) => ({ value })),
+        returnByValue: true,
+        awaitPromise: true,
+      });
+      if (r.exceptionDetails) {
+        throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text ?? "callFunctionOn failed");
+      }
+      return r.result?.value as T;
+    } finally {
+      this.send("Runtime.releaseObject", { objectId }).catch(() => {});
+    }
+  }
+
+  /**
+   * Set a `<select>` (resolved from a snapshot ref) to `value` and fire the
+   * `input` + `change` events a framework listens for — the reliable way to
+   * drive a native dropdown, which a click()+type() can't. `value` matches an
+   * option's `value`, then its visible label/text. Returns the select's
+   * resulting value; throws if the ref isn't a `<select>` or nothing matched.
+   */
+  async select(ref: number, value: string): Promise<string> {
+    return this.callOnRef<string>(
+      ref,
+      `function(v){
+        if (this.tagName !== "SELECT") throw new Error("select: ref <" + this.tagName.toLowerCase() + "> is not a <select>");
+        let matched = false;
+        for (const opt of this.options) {
+          const hit = opt.value === v || opt.label === v || opt.text === v;
+          opt.selected = hit;
+          if (hit) matched = true;
+        }
+        if (!matched) throw new Error("select: no <option> matching " + JSON.stringify(v));
+        this.dispatchEvent(new Event("input", { bubbles: true }));
+        this.dispatchEvent(new Event("change", { bubbles: true }));
+        return this.value;
+      }`,
+      [value],
+    );
+  }
+
   /** Capture a PNG screenshot (Buffer) — feed to a vision model. Always the main
    *  page's viewport (Page.captureScreenshot isn't a per-frame concept), regardless
    *  of any active useFrame(). */

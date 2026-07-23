@@ -35,6 +35,8 @@ const TOOLS = [
         inputSchema: { type: "object", properties: { ref: { type: "number" }, text: { type: "string" } }, required: ["ref", "text"] } },
     { name: "veil_type", description: "Type text into the currently focused element.",
         inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
+    { name: "veil_select", description: "Set a <select> dropdown (by snapshot ref) to a value and fire input+change — the reliable way to drive a native <select>, which click+type can't. Value matches an option's value, then its visible label/text.",
+        inputSchema: { type: "object", properties: { ref: { type: "number" }, value: { type: "string" } }, required: ["ref", "value"] } },
     { name: "veil_press", description: "Press a single named key on the focused element. Use 'Enter' to submit a search box or form (fill a field, then veil_press Enter). Supported: Enter, Tab, Escape, Backspace, ArrowDown, ArrowUp.",
         inputSchema: { type: "object", properties: { key: { type: "string", enum: ["Enter", "Tab", "Escape", "Backspace", "ArrowDown", "ArrowUp"] } }, required: ["key"] } },
     { name: "veil_scroll", description: "Scroll the page by a pixel delta via a real mouse-wheel event (positive dy scrolls down, positive dx scrolls right). Reveals lazy-loaded / off-screen content; re-run veil_snapshot after.",
@@ -96,6 +98,8 @@ async function callTool(name, args) {
         case "veil_press":
             await p.press(args.key);
             return text(`pressed ${args.key}`);
+        case "veil_select":
+            return text(`set <select> [${args.ref}] to ${JSON.stringify(await p.select(args.ref, args.value))}`);
         case "veil_scroll":
             await p.scroll(args.dx ?? 0, args.dy ?? 0);
             return text(`scrolled (${args.dx ?? 0}, ${args.dy ?? 0})`);
