@@ -399,28 +399,104 @@ export class Page {
     return this.cdp.send<T>(method, params, this.activeSessionId);
   }
 
-  /** Navigate and wait for the load event. Always the main page, regardless of
-   *  any active useFrame() — top-level navigation isn't a per-frame concept. */
-  async goto(url: string, opts: { timeout?: number } = {}) {
-    // A top-level nav invalidates every snapshot ref and returns us to the main
-    // page context: drop stale refs (a leftover ref would click wrong coords) and
-    // reset the active session so a prior useFrame() doesn't leak across the nav.
+  /** Navigate and wait. Always the main page, regardless of any active useFrame()
+   *  — top-level navigation isn't a per-frame concept. `waitUntil` is "load"
+   *  (default) or "networkidle" (no network for ~500ms — better for SPAs that
+   *  fetch after the load event). Reset ref/session state so a prior useFrame()
+   *  can't leak across the nav and a leftover ref can't click wrong coords. */
+  async goto(url: string, opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {}) {
     this.refs.clear();
     this.activeSessionId = this.sessionId;
-    const loaded = this.cdp.once("Page.loadEventFired", {
-      sessionId: this.sessionId,
-      timeout: opts.timeout ?? 30000,
-    });
+    const timeout = opts.timeout ?? 30000;
+    // Arm the waiter BEFORE navigating: we can't miss loadEventFired, and a
+    // networkidle waiter is already counting the navigation's own requests.
+    const waiter = this.waitForLoad(opts.waitUntil ?? "load", timeout);
     // Page.navigate resolves with { frameId, loaderId, errorText? }. On a DNS or
     // connection failure Chrome STILL fires loadEventFired for its own error page,
     // so the load event alone can't tell success from failure — errorText can.
     const nav = await this.cdp.send<{ errorText?: string }>("Page.navigate", { url }, this.sessionId);
     if (nav?.errorText) {
-      loaded.catch(() => {}); // we're bailing; swallow the pending once() timeout rejection
+      waiter.catch(() => {}); // we're bailing; swallow the pending waiter rejection
       throw new Error(`goto(${url}) failed: ${nav.errorText}`);
     }
-    await loaded;
+    await waiter;
     await sleep(this.rng.range(150, 400)); // settle, like a human reading
+  }
+
+  /** Reload the current page (Page.reload), waiting per `waitUntil`. */
+  async reload(opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {}) {
+    this.refs.clear();
+    this.activeSessionId = this.sessionId;
+    const waiter = this.waitForLoad(opts.waitUntil ?? "load", opts.timeout ?? 30000);
+    await this.cdp.send("Page.reload", {}, this.sessionId);
+    await waiter;
+    await sleep(this.rng.range(150, 400));
+  }
+
+  /** Go back one entry in session history. Throws if there's nothing earlier. */
+  async back(opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {}) {
+    await this.historyGo(-1, opts);
+  }
+
+  /** Go forward one entry in session history. Throws if there's nothing later. */
+  async forward(opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {}) {
+    await this.historyGo(1, opts);
+  }
+
+  /** Navigate `delta` entries through session history via
+   *  Page.navigateToHistoryEntry (precise, and lets us reject cleanly when the
+   *  target entry doesn't exist instead of silently no-op'ing like history.go). */
+  private async historyGo(delta: -1 | 1, opts: { timeout?: number; waitUntil?: "load" | "networkidle" }) {
+    const { currentIndex, entries } = await this.cdp.send<{ currentIndex: number; entries: Array<{ id: number; url: string }> }>(
+      "Page.getNavigationHistory", {}, this.sessionId,
+    );
+    const target = entries?.[currentIndex + delta];
+    if (!target) throw new Error(delta < 0 ? "back(): no earlier history entry" : "forward(): no later history entry");
+    this.refs.clear();
+    this.activeSessionId = this.sessionId;
+    const waiter = this.waitForLoad(opts.waitUntil ?? "load", opts.timeout ?? 30000);
+    await this.cdp.send("Page.navigateToHistoryEntry", { entryId: target.id }, this.sessionId);
+    await waiter;
+    await sleep(this.rng.range(150, 400));
+  }
+
+  /** Resolve when the page finishes loading, per the `waitUntil` strategy. */
+  private waitForLoad(waitUntil: "load" | "networkidle", timeout: number): Promise<void> {
+    if (waitUntil === "networkidle") return this.waitForNetworkIdle(timeout);
+    return this.cdp.once("Page.loadEventFired", { sessionId: this.sessionId, timeout }).then(() => {});
+  }
+
+  /** Resolve once no network request has been in flight for `idleMs`, or reject
+   *  after `timeout`. Tracks in-flight requests over the Network domain — the
+   *  right signal for SPAs whose content arrives after the load event. */
+  private waitForNetworkIdle(timeout: number, idleMs = 500): Promise<void> {
+    // Enable Network first (idempotent); listeners below are registered
+    // synchronously so no event is missed once it takes effect.
+    this.cdp.send("Network.enable", {}, this.sessionId).catch(() => {});
+    return new Promise<void>((resolve, reject) => {
+      let inflight = 0;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      let settled = false;
+      const settle = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(idleTimer);
+        clearTimeout(hardTimer);
+        offReq(); offFin(); offFail();
+        err ? reject(err) : resolve();
+      };
+      const armIdle = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => settle(), idleMs);
+      };
+      const onReq = () => { inflight++; clearTimeout(idleTimer); };
+      const onDone = () => { inflight = Math.max(0, inflight - 1); if (inflight === 0) armIdle(); };
+      const offReq = this.cdp.on("Network.requestWillBeSent", onReq, this.sessionId);
+      const offFin = this.cdp.on("Network.loadingFinished", onDone, this.sessionId);
+      const offFail = this.cdp.on("Network.loadingFailed", onDone, this.sessionId);
+      const hardTimer = setTimeout(() => settle(new Error(`waitUntil networkidle: timed out after ${timeout}ms`)), timeout);
+      armIdle(); // start the idle window; the navigation's first request cancels it
+    });
   }
 
   /** Evaluate JS in the page WITHOUT Runtime.enable (avoids the CDP tell). */

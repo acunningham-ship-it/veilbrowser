@@ -28,8 +28,14 @@ async function ensurePage() {
     return page;
 }
 const TOOLS = [
-    { name: "veil_goto", description: "Navigate the browser to a URL (launches Chrome on first call).",
-        inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
+    { name: "veil_goto", description: "Navigate the browser to a URL (launches Chrome on first call). waitUntil 'load' (default) or 'networkidle' (wait until no network for ~500ms — better for SPAs that fetch after load).",
+        inputSchema: { type: "object", properties: { url: { type: "string" }, waitUntil: { type: "string", enum: ["load", "networkidle"] } }, required: ["url"] } },
+    { name: "veil_reload", description: "Reload the current page. waitUntil 'load' (default) or 'networkidle'.",
+        inputSchema: { type: "object", properties: { waitUntil: { type: "string", enum: ["load", "networkidle"] } } } },
+    { name: "veil_back", description: "Go back one entry in session history (errors if there's nothing earlier). waitUntil 'load' (default) or 'networkidle'.",
+        inputSchema: { type: "object", properties: { waitUntil: { type: "string", enum: ["load", "networkidle"] } } } },
+    { name: "veil_forward", description: "Go forward one entry in session history (errors if there's nothing later). waitUntil 'load' (default) or 'networkidle'.",
+        inputSchema: { type: "object", properties: { waitUntil: { type: "string", enum: ["load", "networkidle"] } } } },
     { name: "veil_snapshot", description: "Return the page as a numbered list of interactive elements from the accessibility tree. Use the [ref] numbers with veil_click / veil_fill. No CSS selectors needed.",
         inputSchema: { type: "object", properties: {} } },
     { name: "veil_click", description: "Click an element by its snapshot ref (human-like mouse path).",
@@ -97,8 +103,17 @@ async function callTool(name, args) {
     const p = await ensurePage();
     switch (name) {
         case "veil_goto":
-            await p.goto(args.url);
+            await p.goto(args.url, { waitUntil: args.waitUntil });
             return text(`navigated to ${await p.url()}`);
+        case "veil_reload":
+            await p.reload({ waitUntil: args.waitUntil });
+            return text(`reloaded ${await p.url()}`);
+        case "veil_back":
+            await p.back({ waitUntil: args.waitUntil });
+            return text(`back to ${await p.url()}`);
+        case "veil_forward":
+            await p.forward({ waitUntil: args.waitUntil });
+            return text(`forward to ${await p.url()}`);
         case "veil_snapshot": {
             const s = await p.snapshot();
             return text(`# ${s.title}\n${s.url}\n\n${s.text || "(no interactive elements)"}`);
