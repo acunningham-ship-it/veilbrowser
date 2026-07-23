@@ -375,7 +375,26 @@ export class Page {
             screenWidth: fp.screen.width,
             screenHeight: fp.screen.height,
         });
-        // 3. the masked page-level getter layer, armed on every future document.
+        // 3. timezone + locale + optional geolocation — all browser-level, so they
+        //    resolve natively (Intl.DateTimeFormat().resolvedOptions().timeZone,
+        //    navigator.language, navigator.geolocation) with no JS getter to unmask.
+        //    A US profile must carry a US timezone/locale (and, if given, US coords):
+        //    a Windows/en-US UA reporting Asia/Shanghai is a contradiction detectors
+        //    score. setLocaleOverride can reject if one is already mid-flight — that's
+        //    non-fatal to the rest of the profile, so it's tolerated.
+        await this.send("Emulation.setTimezoneOverride", { timezoneId: fp.timezone });
+        try {
+            await this.send("Emulation.setLocaleOverride", { locale: fp.locale });
+        }
+        catch { }
+        if (fp.geolocation) {
+            await this.send("Emulation.setGeolocationOverride", {
+                latitude: fp.geolocation.latitude,
+                longitude: fp.geolocation.longitude,
+                accuracy: fp.geolocation.accuracy ?? 100,
+            });
+        }
+        // 4. the masked page-level getter layer, armed on every future document.
         await this.send("Page.addScriptToEvaluateOnNewDocument", { source: buildFingerprintStealth(fp) });
     }
     /**

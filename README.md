@@ -141,9 +141,14 @@ await page.applyFingerprint(fp);
 ```
 
 **How it's applied (two layers).** The bulk goes through Chrome itself — `UA` +
-the full `userAgentMetadata` client hints + the legacy `navigator.platform`, and
-the `screen` size + `devicePixelRatio`, via CDP `Emulation.*`. These are set by the
-browser, so there is **no JS getter to unmask** — the strongest kind of spoof. Only
+the full `userAgentMetadata` client hints + the legacy `navigator.platform`, the
+`screen` size + `devicePixelRatio`, and the **timezone / locale / geolocation** —
+all via CDP `Emulation.*`. These are set by the browser, so there is **no JS getter
+to unmask** — the strongest kind of spoof, and they resolve natively
+(`Intl.DateTimeFormat().resolvedOptions().timeZone`, `navigator.language`,
+`navigator.geolocation`). A US profile should carry a US timezone/locale (and
+optional US coordinates) — a region that disagrees with the UA is a contradiction
+detectors score. Only
 the handful of values CDP can't set (`hardwareConcurrency`, `deviceMemory`,
 `languages`, `screen.avail*`/colour depth) are injected as getters — each defined on
 the *prototype* (inherited, so no own-property tell) with its `toString()` masked to
