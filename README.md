@@ -224,10 +224,10 @@ We test before we claim.
 ## Use from an AI agent (MCP)
 
 Veil ships an MCP server (`src/mcp.ts`) — already wired into **persoje**
-(`~/.config/persoje/mcp.json`), exposing 21 tools: `goto`, `snapshot`, `click`, `fill`,
-`type`, `press`, `scroll`, `wait_for`, `wait_for_selector`, `click_at`, `get_cookies`,
-`screenshot`, `eval`, `upload`, `upload_via_picker`, `fedcm_enable`, `fedcm_signin`,
-`drag`, `frames`, `use_frame`, `close`. Tool-execution failures come
+(`~/.config/persoje/mcp.json`), exposing 22 tools: `goto`, `snapshot`, `click`, `fill`,
+`type`, `select`, `press`, `scroll`, `wait_for`, `wait_for_selector`, `click_at`,
+`get_cookies`, `screenshot`, `eval`, `upload`, `upload_via_picker`, `fedcm_enable`,
+`fedcm_signin`, `drag`, `frames`, `use_frame`, `close`. Tool-execution failures come
 back as `isError` results (the model reads and self-corrects) rather than JSON-RPC errors.
 Verified end-to-end through persoje's own MCP client (discover → goto → snapshot). Any MCP host works:
 

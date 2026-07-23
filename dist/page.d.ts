@@ -190,6 +190,22 @@ export declare class Page {
     private clearField;
     /** Click a field, clear any existing value, then type into it. */
     fill(ref: number, text: string): Promise<void>;
+    /** Resolve a snapshot ref to a live JS object handle (objectId) — the bridge
+     *  from an accessibility-tree ref to callFunctionOn, so we can read/drive one
+     *  specific element instead of the whole page. */
+    private resolveRefObject;
+    /** Call a function with `this` bound to the element behind a snapshot ref and
+     *  return its by-value result. Uses Runtime.callFunctionOn (no Runtime.enable
+     *  needed) and always releases the node handle so it can't leak. */
+    private callOnRef;
+    /**
+     * Set a `<select>` (resolved from a snapshot ref) to `value` and fire the
+     * `input` + `change` events a framework listens for — the reliable way to
+     * drive a native dropdown, which a click()+type() can't. `value` matches an
+     * option's `value`, then its visible label/text. Returns the select's
+     * resulting value; throws if the ref isn't a `<select>` or nothing matched.
+     */
+    select(ref: number, value: string): Promise<string>;
     /** Capture a PNG screenshot (Buffer) — feed to a vision model. Always the main
      *  page's viewport (Page.captureScreenshot isn't a per-frame concept), regardless
      *  of any active useFrame(). */
