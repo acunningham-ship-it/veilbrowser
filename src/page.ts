@@ -651,12 +651,35 @@ export class Page {
     return this.callOnRef<string | null>(ref, `function(n){ return this.getAttribute(n); }`, [name]);
   }
 
-  /** Capture a PNG screenshot (Buffer) — feed to a vision model. Always the main
-   *  page's viewport (Page.captureScreenshot isn't a per-frame concept), regardless
-   *  of any active useFrame(). */
-  async screenshot(opts: { fullPage?: boolean } = {}): Promise<Buffer> {
+  /**
+   * Capture a PNG screenshot (Buffer) — feed to a vision model. Always the main
+   * page's viewport (Page.captureScreenshot isn't a per-frame concept), regardless
+   * of any active useFrame(). Scope options (mutually exclusive; `ref` wins, then
+   * `clip`, then `fullPage`):
+   *   - `{ ref }`      just that element's bounding box (from DOM.getBoxModel).
+   *   - `{ clip }`     an explicit page-coordinate rectangle {x,y,width,height}.
+   *   - `{ fullPage }` the whole scrollable page, not just the viewport.
+   * Default (no options): the current viewport.
+   */
+  async screenshot(
+    opts: { fullPage?: boolean; ref?: number; clip?: { x: number; y: number; width: number; height: number } } = {},
+  ): Promise<Buffer> {
     const params: any = { format: "png" };
-    if (opts.fullPage) params.captureBeyondViewport = true;
+    if (opts.ref != null) {
+      const target = this.refs.get(opts.ref);
+      if (!target) throw new Error(`No element with ref ${opts.ref}. Call snapshot() first.`);
+      const { model } = await this.send("DOM.getBoxModel", { backendNodeId: target.backendNodeId });
+      const q = model.border as number[]; // border box: [x1,y1, x2,y2, x3,y3, x4,y4]
+      const xs = [q[0], q[2], q[4], q[6]], ys = [q[1], q[3], q[5], q[7]];
+      const x = Math.min(...xs), y = Math.min(...ys);
+      params.clip = { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y, scale: 1 };
+      params.captureBeyondViewport = true; // element may be scrolled out of the viewport
+    } else if (opts.clip) {
+      params.clip = { ...opts.clip, scale: 1 };
+      params.captureBeyondViewport = true;
+    } else if (opts.fullPage) {
+      params.captureBeyondViewport = true;
+    }
     const { data } = await this.cdp.send("Page.captureScreenshot", params, this.sessionId);
     return Buffer.from(data, "base64");
   }

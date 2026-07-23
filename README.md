@@ -115,7 +115,8 @@ The selling point isn't only stealth — it's that agents drive it *well*:
 - **`snapshot()`** returns the page as a flat numbered index from the accessibility
   tree (the semantic layer screen readers use). The #1 cause of agent breakage —
   guessed CSS/XPath selectors — is gone. The agent acts on a stable `ref`.
-- **`screenshot()`** returns a PNG buffer, ready for vision grounding.
+- **`screenshot()`** returns a PNG buffer, ready for vision grounding — the viewport,
+  the whole `{fullPage}`, a single element `{ref}`, or an explicit `{clip}` rectangle.
 - **`click` / `fill` / `type`** drive real CDP input with human dynamics.
 - **`waitFor(expr)`** replaces flaky fixed sleeps.
 
