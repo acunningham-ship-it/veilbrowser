@@ -153,11 +153,40 @@ export declare class Page {
     /** Commands go to whichever session is "active" — the main page by default,
      *  or a child iframe's own session after useFrame(). */
     private send;
-    /** Navigate and wait for the load event. Always the main page, regardless of
-     *  any active useFrame() — top-level navigation isn't a per-frame concept. */
+    /** Navigate and wait. Always the main page, regardless of any active useFrame()
+     *  — top-level navigation isn't a per-frame concept. `waitUntil` is "load"
+     *  (default) or "networkidle" (no network for ~500ms — better for SPAs that
+     *  fetch after the load event). Reset ref/session state so a prior useFrame()
+     *  can't leak across the nav and a leftover ref can't click wrong coords. */
     goto(url: string, opts?: {
         timeout?: number;
+        waitUntil?: "load" | "networkidle";
     }): Promise<void>;
+    /** Reload the current page (Page.reload), waiting per `waitUntil`. */
+    reload(opts?: {
+        timeout?: number;
+        waitUntil?: "load" | "networkidle";
+    }): Promise<void>;
+    /** Go back one entry in session history. Throws if there's nothing earlier. */
+    back(opts?: {
+        timeout?: number;
+        waitUntil?: "load" | "networkidle";
+    }): Promise<void>;
+    /** Go forward one entry in session history. Throws if there's nothing later. */
+    forward(opts?: {
+        timeout?: number;
+        waitUntil?: "load" | "networkidle";
+    }): Promise<void>;
+    /** Navigate `delta` entries through session history via
+     *  Page.navigateToHistoryEntry (precise, and lets us reject cleanly when the
+     *  target entry doesn't exist instead of silently no-op'ing like history.go). */
+    private historyGo;
+    /** Resolve when the page finishes loading, per the `waitUntil` strategy. */
+    private waitForLoad;
+    /** Resolve once no network request has been in flight for `idleMs`, or reject
+     *  after `timeout`. Tracks in-flight requests over the Network domain — the
+     *  right signal for SPAs whose content arrives after the load event. */
+    private waitForNetworkIdle;
     /** Evaluate JS in the page WITHOUT Runtime.enable (avoids the CDP tell). */
     evaluate<T = any>(expression: string): Promise<T>;
     url(): Promise<string>;
