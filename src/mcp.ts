@@ -59,8 +59,8 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { ref: { type: "number" } }, required: ["ref"] } },
   { name: "veil_attribute", description: "Read one attribute of an element by snapshot ref (e.g. href, value, aria-label, a data-* attribute). Returns the raw string, or null if absent.",
     inputSchema: { type: "object", properties: { ref: { type: "number" }, name: { type: "string" } }, required: ["ref", "name"] } },
-  { name: "veil_screenshot", description: "Capture a PNG screenshot of the page (returned as an image for vision).",
-    inputSchema: { type: "object", properties: {} } },
+  { name: "veil_screenshot", description: "Capture a PNG screenshot (returned as an image for vision). Default is the current viewport. Pass a snapshot `ref` to shoot just that element's bounding box, `clip` for an explicit {x,y,width,height} page rectangle, or `fullPage:true` for the whole scrollable page.",
+    inputSchema: { type: "object", properties: { ref: { type: "number", description: "snapshot ref — shoot just this element" }, fullPage: { type: "boolean", description: "capture the whole scrollable page" }, clip: { type: "object", description: "explicit page-coordinate rectangle", properties: { x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }, required: ["x", "y", "width", "height"] } } } },
   { name: "veil_eval", description: "Evaluate a JS expression in the page and return the value.",
     inputSchema: { type: "object", properties: { expression: { type: "string" } }, required: ["expression"] } },
   { name: "veil_fedcm_enable", description: "Arm FedCM interception BEFORE navigating to a site that shows a Google/federated 'one-tap' sign-in on load. Order: veil_fedcm_enable -> veil_goto the sign-in page -> veil_fedcm_signin. (Skip this for an active 'Sign in with Google' button; veil_fedcm_signin arms itself when you pass a triggerRef.)",
@@ -133,7 +133,7 @@ async function callTool(name: string, args: any): Promise<any> {
       return text(v === null ? "null" : v);
     }
     case "veil_screenshot": {
-      const png = await p.screenshot();
+      const png = await p.screenshot({ ref: args.ref, fullPage: args.fullPage, clip: args.clip });
       return { content: [{ type: "image", data: png.toString("base64"), mimeType: "image/png" }] };
     }
     case "veil_eval":

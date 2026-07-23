@@ -218,11 +218,25 @@ export declare class Page {
      * element has no such attribute.
      */
     attribute(ref: number, name: string): Promise<string | null>;
-    /** Capture a PNG screenshot (Buffer) — feed to a vision model. Always the main
-     *  page's viewport (Page.captureScreenshot isn't a per-frame concept), regardless
-     *  of any active useFrame(). */
+    /**
+     * Capture a PNG screenshot (Buffer) — feed to a vision model. Always the main
+     * page's viewport (Page.captureScreenshot isn't a per-frame concept), regardless
+     * of any active useFrame(). Scope options (mutually exclusive; `ref` wins, then
+     * `clip`, then `fullPage`):
+     *   - `{ ref }`      just that element's bounding box (from DOM.getBoxModel).
+     *   - `{ clip }`     an explicit page-coordinate rectangle {x,y,width,height}.
+     *   - `{ fullPage }` the whole scrollable page, not just the viewport.
+     * Default (no options): the current viewport.
+     */
     screenshot(opts?: {
         fullPage?: boolean;
+        ref?: number;
+        clip?: {
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+        };
     }): Promise<Buffer>;
     /** Poll an expression until truthy (replaces flaky fixed sleeps). */
     waitFor(expression: string, opts?: {
