@@ -11,6 +11,9 @@
  *   VEIL_USER_DATA_DIR=/path/to/profile bun run src/mcp.ts  # persistent profile
  */
 import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Browser } from "./browser.js";
 let browser = null;
 let page = null;
@@ -65,6 +68,8 @@ const TOOLS = [
         inputSchema: { type: "object", properties: { ref: { type: "number", description: "snapshot ref — shoot just this element" }, fullPage: { type: "boolean", description: "capture the whole scrollable page" }, clip: { type: "object", description: "explicit page-coordinate rectangle", properties: { x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }, required: ["x", "y", "width", "height"] } } } },
     { name: "veil_eval", description: "Evaluate a JS expression in the page and return the value.",
         inputSchema: { type: "object", properties: { expression: { type: "string" } }, required: ["expression"] } },
+    { name: "veil_pdf", description: "Render the current page to a PDF and save it to disk — Chrome prints PDF in HEADLESS mode only (VEIL_HEADLESS=1). Pass `path` for the output file, or omit to write a temp file; returns the saved path. Options: landscape, printBackground (default true), scale, pageRanges.",
+        inputSchema: { type: "object", properties: { path: { type: "string", description: "output .pdf path (default: a temp file)" }, landscape: { type: "boolean" }, printBackground: { type: "boolean" }, scale: { type: "number" }, pageRanges: { type: "string", description: 'e.g. "1-3, 5"' } } } },
     { name: "veil_fedcm_enable", description: "Arm FedCM interception BEFORE navigating to a site that shows a Google/federated 'one-tap' sign-in on load. Order: veil_fedcm_enable -> veil_goto the sign-in page -> veil_fedcm_signin. (Skip this for an active 'Sign in with Google' button; veil_fedcm_signin arms itself when you pass a triggerRef.)",
         inputSchema: { type: "object", properties: {} } },
     { name: "veil_fedcm_signin", description: "Complete a federated ('Sign in with Google', FedCM) login that Chrome renders as a native chooser no click can reach: waits for the intercepted account chooser, selects an account, and returns it. Pass triggerRef to first click an active sign-in button; omit it for one-tap/passive flows (call veil_fedcm_enable before navigating). accountIndex defaults to 0.",
@@ -146,6 +151,13 @@ async function callTool(name, args) {
         }
         case "veil_eval":
             return text(JSON.stringify(await p.evaluate(args.expression)));
+        case "veil_pdf": {
+            const { path: outPath, ...pdfOpts } = args;
+            const buf = await p.pdf(pdfOpts);
+            const dest = outPath ?? join(tmpdir(), `veil-${Date.now()}.pdf`);
+            writeFileSync(dest, buf);
+            return text(`saved PDF (${buf.length} bytes) to ${dest}`);
+        }
         case "veil_fedcm_enable":
             await p.enableFedCm({ autoSelectFirst: false });
             return text("FedCM armed. Navigate to the sign-in page (one-tap fires on load), then call veil_fedcm_signin.");
