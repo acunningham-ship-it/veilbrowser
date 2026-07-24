@@ -51,7 +51,8 @@ export interface FedCmDialog {
 export declare function isPrivateHost(url: string): boolean;
 /**
  * Resolve one character to a well-formed keystroke: the DOM `key`, the physical
- * `code`, the legacy `windowsVirtualKeyCode` (`vk`), and the `text` to commit.
+ * `code`, the legacy `windowsVirtualKeyCode` (`vk`), the `text` to commit, and
+ * whether the character needs the `shift` modifier held.
  * Filling these in is the whole point — a bare `text`-only key event leaves
  * `KeyboardEvent.keyCode === 0` and `code === ""`, which breaks keydown-driven
  * UIs and is a hard bot-tell on login forms. Letters, digits, Enter and the US
@@ -63,6 +64,7 @@ export declare function keyInfo(ch: string): {
     code: string;
     vk: number;
     text: string;
+    shift: boolean;
 };
 export declare class Page {
     private cdp;
@@ -269,7 +271,9 @@ export declare class Page {
     /** Type text into the focused element with human cadence. Each character is
      *  dispatched as a real keydown/char/keyUp with the right key, code, and
      *  virtual-key code (see keyInfo) — the bare text-only events this used to send
-     *  read as keyCode===0 and broke keydown-driven login forms. */
+     *  read as keyCode===0 and broke keydown-driven login forms. Characters that
+     *  need Shift (uppercase letters, "!"/"@"/…) carry the Shift modifier so
+     *  KeyboardEvent.shiftKey agrees with the produced character. */
     type(text: string): Promise<void>;
     /** Clear the focused field: select-all (Ctrl+A) then Delete, via the Input
      *  domain like the rest of our key dispatch. Playwright's fill() clears first;
@@ -386,7 +390,8 @@ export declare class Page {
     }): Promise<void>;
     /** Read the page's visible text (for scraping a model response, etc.). */
     innerText(): Promise<string>;
-    /** Press a single named key on the focused element (Enter, Tab, Escape, arrows...). */
+    /** Press a single named key on the focused element (Enter, Tab, Escape, arrows,
+     *  Delete, Home/End, PageUp/PageDown...). */
     press(key: string): Promise<void>;
     /**
      * Start intercepting FedCM on this page. Call it ON DEMAND, right before the

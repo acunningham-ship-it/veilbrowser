@@ -125,8 +125,18 @@ const SYMBOL_KEYS = {
     "(": { code: "Digit9", vk: 57 }, ")": { code: "Digit0", vk: 48 },
 };
 /**
+ * Printable symbols that require Shift on a US layout — the shifted half of each
+ * physical key. Typing one must carry the Shift modifier so `KeyboardEvent
+ * .shiftKey` / `getModifierState('Shift')` agree with the character produced: a
+ * "!" or "@" reported with shiftKey:false is a self-contradiction (that symbol
+ * is unreachable without Shift) — a behavioural bot-tell, and it breaks handlers
+ * that gate on the shift state. Uppercase A–Z are detected directly in keyInfo.
+ */
+const SHIFTED_SYMBOLS = new Set('~!@#$%^&*()_+{}|:"<>?'.split(""));
+/**
  * Resolve one character to a well-formed keystroke: the DOM `key`, the physical
- * `code`, the legacy `windowsVirtualKeyCode` (`vk`), and the `text` to commit.
+ * `code`, the legacy `windowsVirtualKeyCode` (`vk`), the `text` to commit, and
+ * whether the character needs the `shift` modifier held.
  * Filling these in is the whole point — a bare `text`-only key event leaves
  * `KeyboardEvent.keyCode === 0` and `code === ""`, which breaks keydown-driven
  * UIs and is a hard bot-tell on login forms. Letters, digits, Enter and the US
@@ -135,17 +145,17 @@ const SYMBOL_KEYS = {
  */
 export function keyInfo(ch) {
     if (ch === "\n" || ch === "\r")
-        return { key: "Enter", code: "Enter", vk: 13, text: "\r" };
+        return { key: "Enter", code: "Enter", vk: 13, text: "\r", shift: false };
     if (/^[a-z]$/i.test(ch)) {
         const upper = ch.toUpperCase();
-        return { key: ch, code: `Key${upper}`, vk: upper.charCodeAt(0), text: ch };
+        return { key: ch, code: `Key${upper}`, vk: upper.charCodeAt(0), text: ch, shift: /^[A-Z]$/.test(ch) };
     }
     if (/^[0-9]$/.test(ch))
-        return { key: ch, code: `Digit${ch}`, vk: ch.charCodeAt(0), text: ch };
+        return { key: ch, code: `Digit${ch}`, vk: ch.charCodeAt(0), text: ch, shift: false };
     const sym = SYMBOL_KEYS[ch];
     if (sym)
-        return { key: ch, code: sym.code, vk: sym.vk, text: ch };
-    return { key: ch, code: "", vk: 0, text: ch };
+        return { key: ch, code: sym.code, vk: sym.vk, text: ch, shift: SHIFTED_SYMBOLS.has(ch) };
+    return { key: ch, code: "", vk: 0, text: ch, shift: false };
 }
 export class Page {
     cdp;
@@ -719,11 +729,13 @@ export class Page {
     /** Type text into the focused element with human cadence. Each character is
      *  dispatched as a real keydown/char/keyUp with the right key, code, and
      *  virtual-key code (see keyInfo) — the bare text-only events this used to send
-     *  read as keyCode===0 and broke keydown-driven login forms. */
+     *  read as keyCode===0 and broke keydown-driven login forms. Characters that
+     *  need Shift (uppercase letters, "!"/"@"/…) carry the Shift modifier so
+     *  KeyboardEvent.shiftKey agrees with the produced character. */
     async type(text) {
         for (const ch of text) {
             const k = keyInfo(ch);
-            await this.sendKey({ key: k.key, code: k.code, vk: k.vk, text: k.text });
+            await this.sendKey({ key: k.key, code: k.code, vk: k.vk, text: k.text, modifiers: k.shift ? 8 : 0 });
             await sleep(keyDelay(this.rng, ch));
         }
     }
@@ -953,19 +965,27 @@ export class Page {
     async innerText() {
         return this.evaluate("document.body ? document.body.innerText : ''");
     }
-    /** Press a single named key on the focused element (Enter, Tab, Escape, arrows...). */
+    /** Press a single named key on the focused element (Enter, Tab, Escape, arrows,
+     *  Delete, Home/End, PageUp/PageDown...). */
     async press(key) {
         const KEYS = {
             Enter: { code: "Enter", vk: 13, text: "\r" },
             Tab: { code: "Tab", vk: 9 },
             Escape: { code: "Escape", vk: 27 },
             Backspace: { code: "Backspace", vk: 8 },
+            Delete: { code: "Delete", vk: 46 },
             ArrowDown: { code: "ArrowDown", vk: 40 },
             ArrowUp: { code: "ArrowUp", vk: 38 },
+            ArrowLeft: { code: "ArrowLeft", vk: 37 },
+            ArrowRight: { code: "ArrowRight", vk: 39 },
+            Home: { code: "Home", vk: 36 },
+            End: { code: "End", vk: 35 },
+            PageUp: { code: "PageUp", vk: 33 },
+            PageDown: { code: "PageDown", vk: 34 },
         };
         const k = KEYS[key];
         if (!k)
-            throw new Error(`press: unsupported key ${key}`);
+            throw new Error(`press: unsupported key ${key} (known: ${Object.keys(KEYS).join(", ")})`);
         await this.sendKey({ key, code: k.code, vk: k.vk, text: k.text });
     }
     // --- FedCM: drive federated sign-in ("Sign in with Google" one-tap, etc.) ---

@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- `type()` now holds **Shift** for characters that require it — uppercase letters
+  and shifted symbols (`!@#$%^&*()_+{}|:"<>?~`). Before, a capital or `@` was
+  dispatched with `shiftKey:false`, a self-contradiction (that glyph is
+  unreachable without Shift) that reads as a behavioural bot-tell and breaks
+  shift-gated key handlers. `KeyboardEvent.shiftKey` / `getModifierState('Shift')`
+  now agree with the character. The committed text is unchanged.
+
+### Added
+- `press()` gains `ArrowLeft`, `ArrowRight`, `Delete`, `Home`, `End`, `PageUp`,
+  `PageDown` (previously only `ArrowUp`/`ArrowDown` existed — an asymmetric gap).
+  Exposed through the MCP `veil_press` enum too.
+- New CI unit suite `tests/key-dispatch.test.ts` drives a real `Page` against a
+  mock CDP to lock the on-the-wire key events (shift modifier + navigation keys)
+  without launching Chrome.
+
 ## 1.1.0 — 2026-07-23
 
 Coherent fingerprint / profile control. Veil still ships your **real** Chrome
