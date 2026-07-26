@@ -792,10 +792,25 @@ export class Page {
     const blocker = await this.callOnRef<string | null>(
       ref,
       `function(x, y){
-        const top = document.elementFromPoint(x, y);
+        // elementFromPoint stops at a shadow HOST — it will not look inside an
+        // open shadow root. A web component's real button therefore reads as
+        // "covered by <div#host>", which is a false positive on every design
+        // system, Salesforce Lightning, and most modern admin panels. Descend
+        // through shadow roots to find what is genuinely topmost.
+        let top = document.elementFromPoint(x, y);
         if (!top) return "(nothing — the point is outside the viewport; scroll it into view)";
-        // same element, our own descendant, or one of our ancestors => a real hit
-        if (top === this || this.contains(top) || top.contains(this)) return null;
+        for (let i = 0; i < 10 && top && top.shadowRoot; i++) {
+          const inner = top.shadowRoot.elementFromPoint(x, y);
+          if (!inner || inner === top) break;
+          top = inner;
+        }
+        // Containment, walking across shadow boundaries in BOTH directions,
+        // because contains() does not cross them. Strictly ancestor-or-self —
+        // NOT "share an ancestor", which is true of every pair of nodes at
+        // <body> and would neuter the check entirely.
+        const up = (n) => n.parentNode || n.host || null;
+        for (let n = top; n; n = up(n)) if (n === this) return null;   // top is us, or inside us
+        for (let n = this; n; n = up(n)) if (n === top) return null;   // we are inside top
         const cls = typeof top.className === "string" && top.className.trim()
           ? "." + top.className.trim().split(/\\s+/)[0] : "";
         return "<" + top.tagName.toLowerCase() + (top.id ? "#" + top.id : "") + cls + ">";
@@ -965,7 +980,17 @@ export class Page {
     await this.click(ref);
     await sleep(this.rng.range(60, 160));
 
-    const focused = await this.callOnRef<boolean>(ref, `function(){ return document.activeElement === this; }`);
+    // document.activeElement stops at a shadow HOST — inside a web component it
+    // returns the host, never the field. Descend through shadow roots or every
+    // shadow-DOM fill reads as "focus didn't land".
+    const focused = await this.callOnRef<boolean>(
+      ref,
+      `function(){
+        let a = document.activeElement;
+        for (let i = 0; i < 10 && a && a.shadowRoot && a.shadowRoot.activeElement; i++) a = a.shadowRoot.activeElement;
+        return a === this;
+      }`,
+    );
     if (!focused) {
       throw new Error(
         `fill: ref ${ref} — the click did not put focus in the field, so nothing was typed. ` +
