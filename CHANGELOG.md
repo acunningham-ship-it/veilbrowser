@@ -1,6 +1,46 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-07-26
+
+### Added
+- **`Browser.connect(endpoint)` + `browser.pages()`** — attach to an
+  ALREADY-RUNNING Chrome instead of launching one. Chrome locks a `user-data-dir`,
+  so the profile holding your real logged-in sessions cannot be opened by a second
+  instance; previously the only options were killing the browser holding it or
+  copying the whole profile and losing the live session. This is what makes the
+  sites that matter reachable: Google, Reddit, Meta and TikTok score the **session**,
+  not the IP, so an established profile passes where a fresh one hits a wall.
+  Accepts a `ws://` URL, an `http://` origin, or a bare `host:port`. `pages()`
+  returns the tabs that already exist (skipping `devtools://` and extensions).
+  **`close()` on an attached Browser detaches only — it never kills a process it did
+  not start.** A fingerprint is deliberately not re-applied to an attached page:
+  changing `navigator` properties under a loaded document contradicts what the site
+  already fingerprinted.
+- **`evaluate()` accepts a function**, not just a string. `evaluate(() => document.title)`
+  is what everyone writes coming from puppeteer/playwright; it used to stringify to
+  `"() => document.title"`, which evaluates to a *function object* that
+  `returnByValue` cannot serialise, so CDP replied `Invalid parameters (-32602)` —
+  an error indistinguishable from a protocol regression. String form is unchanged.
+
+### Fixed
+- **`goto()` no longer hangs on a same-document navigation.** A `#fragment` — or any
+  history/`pushState` navigation — loads no new document, so `Page.loadEventFired`
+  never fires and the waiter ran to the full timeout and threw. Measured on Chrome
+  150: `goto("https://example.com/#x")` failed after **15,001 ms** while real
+  navigations took ~300 ms; anchor links, docs deep-links and SPA routes are ordinary
+  things to follow, so this was a guaranteed 30 s stall on a common path. Now races
+  `Page.navigatedWithinDocument` against the load waiter — chosen over comparing URLs,
+  which would need to normalise trailing slashes, relative hrefs and encoding and
+  would still miss `pushState`. Verified non-vacuous: an unresolvable host still
+  rejects in 80 ms, a real page still returns 200, a 404 still reports 404.
+
+### Verified against Chrome 150
+`examples/cdp150-smoke.ts` — run after any Chrome upgrade. Veil speaks raw CDP with
+no framework in between, so a protocol change surfaces as a runtime failure in
+whatever script runs next rather than as a build error. Checks the stealth properties
+too (`navigator.webdriver` false, UA and UA-CH majors agreeing). 8/8 on 150.
+
+### Also in this release (previously unreleased)
 
 ### Fixed
 - `type()` now holds **Shift** for characters that require it — uppercase letters
