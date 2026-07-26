@@ -225,7 +225,7 @@ export declare class Page {
      *  Bounded by `timeout` (default 30s): a wedged renderer — or an
      *  awaitPromise expression that never settles — otherwise leaves this pending
      *  forever, so we race the CDP send against a timer and reject cleanly. */
-    evaluate<T = any>(expression: string, opts?: {
+    evaluate<T = any>(expression: string | ((...args: any[]) => any), opts?: {
         timeout?: number;
     }): Promise<T>;
     url(): Promise<string>;

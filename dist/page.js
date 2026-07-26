@@ -605,6 +605,19 @@ export class Page {
      *  forever, so we race the CDP send against a timer and reject cleanly. */
     async evaluate(expression, opts = {}) {
         const timeout = opts.timeout ?? 30000;
+        // Accept a FUNCTION as well as a string. Everyone arrives here from puppeteer or
+        // playwright and writes `evaluate(() => document.title)`. That used to stringify
+        // to "() => document.title", which Runtime.evaluate happily evaluates INTO A
+        // FUNCTION OBJECT — and returnByValue cannot serialise a function, so CDP
+        // answers "Invalid parameters (-32602)".
+        //
+        // That error is indistinguishable from a protocol regression, and it cost me
+        // four probes hunting a Chrome 150 breakage that never existed. A wrong call
+        // shape must not produce an error that blames the browser. Wrapping it in an
+        // IIFE makes the intuitive form simply work.
+        if (typeof expression === "function") {
+            expression = `(${expression.toString()})()`;
+        }
         let r;
         try {
             r = await this.cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, this.activeSessionId, timeout);
