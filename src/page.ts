@@ -732,9 +732,45 @@ export class Page {
     return center;
   }
 
+  /**
+   * Hit-test the point we are about to click: is the target actually the
+   * topmost element there? A real mouse event goes to whatever is on top, which
+   * on a live page is routinely a cookie banner, a modal backdrop, a sticky
+   * header, or a loading veil that hasn't torn down. The overlay takes the
+   * click, the target never fires, and nothing throws.
+   *
+   * Deliberately tuned for PRECISION, not recall — this runs on every click, so
+   * a false positive breaks working code, which is the failure that gets a
+   * check deleted. Anything in the same containment chain (a <span> inside the
+   * button, or a wrapper around it) is treated as a hit. Only a genuinely
+   * unrelated topmost element counts as occlusion.
+   */
+  private async assertHittable(ref: number, p: Point, action: string) {
+    const blocker = await this.callOnRef<string | null>(
+      ref,
+      `function(x, y){
+        const top = document.elementFromPoint(x, y);
+        if (!top) return "(nothing — the point is outside the viewport; scroll it into view)";
+        // same element, our own descendant, or one of our ancestors => a real hit
+        if (top === this || this.contains(top) || top.contains(this)) return null;
+        const cls = typeof top.className === "string" && top.className.trim()
+          ? "." + top.className.trim().split(/\\s+/)[0] : "";
+        return "<" + top.tagName.toLowerCase() + (top.id ? "#" + top.id : "") + cls + ">";
+      }`,
+      [p.x, p.y],
+    );
+    if (blocker) {
+      throw new Error(
+        `${action}: ref ${ref} is covered by ${blocker} — the click would go to that element instead. ` +
+          `Dismiss the overlay (cookie banner, modal, sticky header) or scroll, then snapshot() again.`,
+      );
+    }
+  }
+
   /** Click an element by its snapshot ref. */
   async click(ref: number) {
     const center = await this.freshCenter(ref, "click");
+    await this.assertHittable(ref, center, "click");
     const target = { center };
     await this.moveTo(target.center);
     await sleep(this.rng.range(30, 90));
