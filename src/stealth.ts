@@ -79,14 +79,14 @@ export function buildStealth(opts: StealthOptions = {}): string {
     patchGetter(Object.getPrototypeOf(navigator), 'languages', ['en-US', 'en']);
   }
 
-  // DELIBERATELY NOT PATCHED — deviceMemory and screen.availHeight.
+  // DELIBERATELY NOT PATCHED -- deviceMemory and screen.availHeight.
   // A tempting "fix" is to clamp deviceMemory to the spec max of 8, and to shave
   // a taskbar inset off availHeight on a WM-less Xvfb (where availHeight === height).
   // Both were tried and REMOVED: a JS getter override is itself the tell. A
   // fingerprinter reading the property descriptor's getter sees "() => value"
   // instead of "[native code]", or notices availHeight became an OWN property of
   // the screen instance instead of being inherited from Screen.prototype. That is
-  // the exact "masking detected" signature veil exists to avoid — worse than the
+  // the exact "masking detected" signature veil exists to avoid -- worse than the
   // anomalous value it hid. On a real user's machine these values are already sane
   // (Chrome caps deviceMemory at 8; a real desktop has a taskbar), so nothing needs
   // patching. On a headless server box that leaks an out-of-spec deviceMemory, fix

@@ -167,6 +167,42 @@ function resolveGpu(mode: LaunchOptions["gpu"]): "hardware" | "software" | "off"
   }
 }
 
+/**
+ * The Chrome flags that are not computed per-launch, split around the three that
+ * are (`--user-data-dir`, `--window-size`, `--window-position`).
+ *
+ * Exported and generated into the Python front end's assets rather than restated
+ * there, because these flags ARE part of the stealth surface: drop
+ * `--disable-blink-features=AutomationControlled` and `navigator.webdriver` flips
+ * to true, which every commercial fingerprinter checks first. A hand-copied second
+ * list would be one careless edit away from a silently-detectable browser.
+ */
+export const CHROME_FLAGS_LEAD = [
+  `--remote-debugging-port=0`,
+  // Since Chrome 111 the DevTools WebSocket upgrade returns 403 unless the
+  // request's Origin is allow-listed. Bun's WS client omits Origin today so we
+  // connect, but a Bun/Chrome update that starts sending one would silently
+  // break every connection. Allow any origin on the local debug endpoint —
+  // Puppeteer and Playwright both do this; it affects only the loopback
+  // debugging socket and is never visible to a page.
+  `--remote-allow-origins=*`,
+];
+
+export const CHROME_FLAGS_TAIL = [
+  // Stealth: navigator.webdriver is gated behind this blink feature. Disabling
+  // the "AutomationControlled" feature makes navigator.webdriver === false,
+  // matching a normal browser. (Playwright historically left it true.)
+  `--disable-blink-features=AutomationControlled`,
+  // Quiet, non-suspicious startup — these match a fresh real profile, they are
+  // NOT the automation-only switches that change fingerprintable behaviour.
+  `--no-first-run`,
+  `--no-default-browser-check`,
+  `--disable-features=Translate,OptimizationHints`,
+  `--password-store=basic`,
+  `--homepage=about:blank`,
+  `about:blank`,
+];
+
 export interface LaunchResult {
   webSocketDebuggerUrl: string;
   process: ChildProcess;
@@ -219,29 +255,11 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
 
   // Port 0 => Chrome picks a free port and writes it to DevToolsActivePort.
   const args = [
-    `--remote-debugging-port=0`,
-    // Since Chrome 111 the DevTools WebSocket upgrade returns 403 unless the
-    // request's Origin is allow-listed. Bun's WS client omits Origin today so we
-    // connect, but a Bun/Chrome update that starts sending one would silently
-    // break every connection. Allow any origin on the local debug endpoint —
-    // Puppeteer and Playwright both do this; it affects only the loopback
-    // debugging socket and is never visible to a page.
-    `--remote-allow-origins=*`,
+    ...CHROME_FLAGS_LEAD,
     `--user-data-dir=${userDataDir}`,
     `--window-size=${width},${height}`,
     `--window-position=${posX},${posY}`,
-    // Stealth: navigator.webdriver is gated behind this blink feature. Disabling
-    // the "AutomationControlled" feature makes navigator.webdriver === false,
-    // matching a normal browser. (Playwright historically left it true.)
-    `--disable-blink-features=AutomationControlled`,
-    // Quiet, non-suspicious startup — these match a fresh real profile, they are
-    // NOT the automation-only switches that change fingerprintable behaviour.
-    `--no-first-run`,
-    `--no-default-browser-check`,
-    `--disable-features=Translate,OptimizationHints`,
-    `--password-store=basic`,
-    `--homepage=about:blank`,
-    `about:blank`,
+    ...CHROME_FLAGS_TAIL,
   ];
   if (opts.headless) {
     // headless=new is the modern engine; still more detectable than headful,

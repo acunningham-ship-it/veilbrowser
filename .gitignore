@@ -30,3 +30,13 @@ examples/ig_trail.ts
 
 # local agent worktrees / session state
 .claude/
+
+# Python build artifacts (the wheel/sdist are attached to the GitHub release, not committed)
+python/dist/
+python/build/
+python/*.egg-info/
+__pycache__/
+*.pyc
+.venv/
+# NOTE: python/veilbrowser/_assets/ IS committed. It is generated, but the package is
+# useless without it and the failure mode is silent (no patch, no error).

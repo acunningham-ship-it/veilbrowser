@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "veilbrowser"
+version = "1.3.0"
+description = "A stealth browser that IS Chrome. Raw CDP, no framework in between."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Armani Cunningham" }]
+keywords = ["browser", "automation", "cdp", "chrome", "stealth", "scraping", "devtools"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Internet :: WWW/HTTP :: Browsers",
+  "Topic :: Software Development :: Testing",
+]
+# One dependency. The CDP client, the launcher and the page API are all stdlib
+# beyond the WebSocket itself — a stealth tool that pulls in a dependency tree is
+# a stealth tool with someone else's HTTP stack in the middle of it.
+dependencies = ["websockets>=12"]
+
+[project.urls]
+Homepage = "https://github.com/acunningham-ship-it/veilbrowser"
+Source = "https://github.com/acunningham-ship-it/veilbrowser"
+Issues = "https://github.com/acunningham-ship-it/veilbrowser/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["veilbrowser"]
+# The generated stealth payloads under veilbrowser/_assets are DATA, and the package
+# is useless without them. Hatchling's file selection is VCS-aware, so a .gitignore
+# rule matching them would silently drop them from the wheel — and the failure mode
+# is not an ImportError, it is a browser that quietly stops being stealthy. The
+# artifacts entry pins them in regardless of ignore rules; tests/test_smoke.py is
+# what proves they actually arrived.
+artifacts = ["veilbrowser/_assets/*"]
+
+[tool.hatch.build.targets.sdist]
+include = ["veilbrowser", "tests", "README.md", "LICENSE", "pyproject.toml"]

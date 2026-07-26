@@ -63,6 +63,18 @@ export interface LaunchOptions {
      */
     fingerprint?: Fingerprint;
 }
+/**
+ * The Chrome flags that are not computed per-launch, split around the three that
+ * are (`--user-data-dir`, `--window-size`, `--window-position`).
+ *
+ * Exported and generated into the Python front end's assets rather than restated
+ * there, because these flags ARE part of the stealth surface: drop
+ * `--disable-blink-features=AutomationControlled` and `navigator.webdriver` flips
+ * to true, which every commercial fingerprinter checks first. A hand-copied second
+ * list would be one careless edit away from a silently-detectable browser.
+ */
+export declare const CHROME_FLAGS_LEAD: string[];
+export declare const CHROME_FLAGS_TAIL: string[];
 export interface LaunchResult {
     webSocketDebuggerUrl: string;
     process: ChildProcess;

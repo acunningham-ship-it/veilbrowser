@@ -1,0 +1,677 @@
+{
+  "_generated_from": "src/page.ts keyInfo()",
+  "keys": {
+    "0": {
+      "key": "0",
+      "code": "Digit0",
+      "vk": 48,
+      "text": "0",
+      "shift": false
+    },
+    "1": {
+      "key": "1",
+      "code": "Digit1",
+      "vk": 49,
+      "text": "1",
+      "shift": false
+    },
+    "2": {
+      "key": "2",
+      "code": "Digit2",
+      "vk": 50,
+      "text": "2",
+      "shift": false
+    },
+    "3": {
+      "key": "3",
+      "code": "Digit3",
+      "vk": 51,
+      "text": "3",
+      "shift": false
+    },
+    "4": {
+      "key": "4",
+      "code": "Digit4",
+      "vk": 52,
+      "text": "4",
+      "shift": false
+    },
+    "5": {
+      "key": "5",
+      "code": "Digit5",
+      "vk": 53,
+      "text": "5",
+      "shift": false
+    },
+    "6": {
+      "key": "6",
+      "code": "Digit6",
+      "vk": 54,
+      "text": "6",
+      "shift": false
+    },
+    "7": {
+      "key": "7",
+      "code": "Digit7",
+      "vk": 55,
+      "text": "7",
+      "shift": false
+    },
+    "8": {
+      "key": "8",
+      "code": "Digit8",
+      "vk": 56,
+      "text": "8",
+      "shift": false
+    },
+    "9": {
+      "key": "9",
+      "code": "Digit9",
+      "vk": 57,
+      "text": "9",
+      "shift": false
+    },
+    " ": {
+      "key": " ",
+      "code": "Space",
+      "vk": 32,
+      "text": " ",
+      "shift": false
+    },
+    "!": {
+      "key": "!",
+      "code": "Digit1",
+      "vk": 49,
+      "text": "!",
+      "shift": true
+    },
+    "\"": {
+      "key": "\"",
+      "code": "Quote",
+      "vk": 222,
+      "text": "\"",
+      "shift": true
+    },
+    "#": {
+      "key": "#",
+      "code": "Digit3",
+      "vk": 51,
+      "text": "#",
+      "shift": true
+    },
+    "$": {
+      "key": "$",
+      "code": "Digit4",
+      "vk": 52,
+      "text": "$",
+      "shift": true
+    },
+    "%": {
+      "key": "%",
+      "code": "Digit5",
+      "vk": 53,
+      "text": "%",
+      "shift": true
+    },
+    "&": {
+      "key": "&",
+      "code": "Digit7",
+      "vk": 55,
+      "text": "&",
+      "shift": true
+    },
+    "'": {
+      "key": "'",
+      "code": "Quote",
+      "vk": 222,
+      "text": "'",
+      "shift": false
+    },
+    "(": {
+      "key": "(",
+      "code": "Digit9",
+      "vk": 57,
+      "text": "(",
+      "shift": true
+    },
+    ")": {
+      "key": ")",
+      "code": "Digit0",
+      "vk": 48,
+      "text": ")",
+      "shift": true
+    },
+    "*": {
+      "key": "*",
+      "code": "Digit8",
+      "vk": 56,
+      "text": "*",
+      "shift": true
+    },
+    "+": {
+      "key": "+",
+      "code": "Equal",
+      "vk": 187,
+      "text": "+",
+      "shift": true
+    },
+    ",": {
+      "key": ",",
+      "code": "Comma",
+      "vk": 188,
+      "text": ",",
+      "shift": false
+    },
+    "-": {
+      "key": "-",
+      "code": "Minus",
+      "vk": 189,
+      "text": "-",
+      "shift": false
+    },
+    ".": {
+      "key": ".",
+      "code": "Period",
+      "vk": 190,
+      "text": ".",
+      "shift": false
+    },
+    "/": {
+      "key": "/",
+      "code": "Slash",
+      "vk": 191,
+      "text": "/",
+      "shift": false
+    },
+    ":": {
+      "key": ":",
+      "code": "Semicolon",
+      "vk": 186,
+      "text": ":",
+      "shift": true
+    },
+    ";": {
+      "key": ";",
+      "code": "Semicolon",
+      "vk": 186,
+      "text": ";",
+      "shift": false
+    },
+    "<": {
+      "key": "<",
+      "code": "Comma",
+      "vk": 188,
+      "text": "<",
+      "shift": true
+    },
+    "=": {
+      "key": "=",
+      "code": "Equal",
+      "vk": 187,
+      "text": "=",
+      "shift": false
+    },
+    ">": {
+      "key": ">",
+      "code": "Period",
+      "vk": 190,
+      "text": ">",
+      "shift": true
+    },
+    "?": {
+      "key": "?",
+      "code": "Slash",
+      "vk": 191,
+      "text": "?",
+      "shift": true
+    },
+    "@": {
+      "key": "@",
+      "code": "Digit2",
+      "vk": 50,
+      "text": "@",
+      "shift": true
+    },
+    "A": {
+      "key": "A",
+      "code": "KeyA",
+      "vk": 65,
+      "text": "A",
+      "shift": true
+    },
+    "B": {
+      "key": "B",
+      "code": "KeyB",
+      "vk": 66,
+      "text": "B",
+      "shift": true
+    },
+    "C": {
+      "key": "C",
+      "code": "KeyC",
+      "vk": 67,
+      "text": "C",
+      "shift": true
+    },
+    "D": {
+      "key": "D",
+      "code": "KeyD",
+      "vk": 68,
+      "text": "D",
+      "shift": true
+    },
+    "E": {
+      "key": "E",
+      "code": "KeyE",
+      "vk": 69,
+      "text": "E",
+      "shift": true
+    },
+    "F": {
+      "key": "F",
+      "code": "KeyF",
+      "vk": 70,
+      "text": "F",
+      "shift": true
+    },
+    "G": {
+      "key": "G",
+      "code": "KeyG",
+      "vk": 71,
+      "text": "G",
+      "shift": true
+    },
+    "H": {
+      "key": "H",
+      "code": "KeyH",
+      "vk": 72,
+      "text": "H",
+      "shift": true
+    },
+    "I": {
+      "key": "I",
+      "code": "KeyI",
+      "vk": 73,
+      "text": "I",
+      "shift": true
+    },
+    "J": {
+      "key": "J",
+      "code": "KeyJ",
+      "vk": 74,
+      "text": "J",
+      "shift": true
+    },
+    "K": {
+      "key": "K",
+      "code": "KeyK",
+      "vk": 75,
+      "text": "K",
+      "shift": true
+    },
+    "L": {
+      "key": "L",
+      "code": "KeyL",
+      "vk": 76,
+      "text": "L",
+      "shift": true
+    },
+    "M": {
+      "key": "M",
+      "code": "KeyM",
+      "vk": 77,
+      "text": "M",
+      "shift": true
+    },
+    "N": {
+      "key": "N",
+      "code": "KeyN",
+      "vk": 78,
+      "text": "N",
+      "shift": true
+    },
+    "O": {
+      "key": "O",
+      "code": "KeyO",
+      "vk": 79,
+      "text": "O",
+      "shift": true
+    },
+    "P": {
+      "key": "P",
+      "code": "KeyP",
+      "vk": 80,
+      "text": "P",
+      "shift": true
+    },
+    "Q": {
+      "key": "Q",
+      "code": "KeyQ",
+      "vk": 81,
+      "text": "Q",
+      "shift": true
+    },
+    "R": {
+      "key": "R",
+      "code": "KeyR",
+      "vk": 82,
+      "text": "R",
+      "shift": true
+    },
+    "S": {
+      "key": "S",
+      "code": "KeyS",
+      "vk": 83,
+      "text": "S",
+      "shift": true
+    },
+    "T": {
+      "key": "T",
+      "code": "KeyT",
+      "vk": 84,
+      "text": "T",
+      "shift": true
+    },
+    "U": {
+      "key": "U",
+      "code": "KeyU",
+      "vk": 85,
+      "text": "U",
+      "shift": true
+    },
+    "V": {
+      "key": "V",
+      "code": "KeyV",
+      "vk": 86,
+      "text": "V",
+      "shift": true
+    },
+    "W": {
+      "key": "W",
+      "code": "KeyW",
+      "vk": 87,
+      "text": "W",
+      "shift": true
+    },
+    "X": {
+      "key": "X",
+      "code": "KeyX",
+      "vk": 88,
+      "text": "X",
+      "shift": true
+    },
+    "Y": {
+      "key": "Y",
+      "code": "KeyY",
+      "vk": 89,
+      "text": "Y",
+      "shift": true
+    },
+    "Z": {
+      "key": "Z",
+      "code": "KeyZ",
+      "vk": 90,
+      "text": "Z",
+      "shift": true
+    },
+    "[": {
+      "key": "[",
+      "code": "BracketLeft",
+      "vk": 219,
+      "text": "[",
+      "shift": false
+    },
+    "\\": {
+      "key": "\\",
+      "code": "Backslash",
+      "vk": 220,
+      "text": "\\",
+      "shift": false
+    },
+    "]": {
+      "key": "]",
+      "code": "BracketRight",
+      "vk": 221,
+      "text": "]",
+      "shift": false
+    },
+    "^": {
+      "key": "^",
+      "code": "Digit6",
+      "vk": 54,
+      "text": "^",
+      "shift": true
+    },
+    "_": {
+      "key": "_",
+      "code": "Minus",
+      "vk": 189,
+      "text": "_",
+      "shift": true
+    },
+    "`": {
+      "key": "`",
+      "code": "Backquote",
+      "vk": 192,
+      "text": "`",
+      "shift": false
+    },
+    "a": {
+      "key": "a",
+      "code": "KeyA",
+      "vk": 65,
+      "text": "a",
+      "shift": false
+    },
+    "b": {
+      "key": "b",
+      "code": "KeyB",
+      "vk": 66,
+      "text": "b",
+      "shift": false
+    },
+    "c": {
+      "key": "c",
+      "code": "KeyC",
+      "vk": 67,
+      "text": "c",
+      "shift": false
+    },
+    "d": {
+      "key": "d",
+      "code": "KeyD",
+      "vk": 68,
+      "text": "d",
+      "shift": false
+    },
+    "e": {
+      "key": "e",
+      "code": "KeyE",
+      "vk": 69,
+      "text": "e",
+      "shift": false
+    },
+    "f": {
+      "key": "f",
+      "code": "KeyF",
+      "vk": 70,
+      "text": "f",
+      "shift": false
+    },
+    "g": {
+      "key": "g",
+      "code": "KeyG",
+      "vk": 71,
+      "text": "g",
+      "shift": false
+    },
+    "h": {
+      "key": "h",
+      "code": "KeyH",
+      "vk": 72,
+      "text": "h",
+      "shift": false
+    },
+    "i": {
+      "key": "i",
+      "code": "KeyI",
+      "vk": 73,
+      "text": "i",
+      "shift": false
+    },
+    "j": {
+      "key": "j",
+      "code": "KeyJ",
+      "vk": 74,
+      "text": "j",
+      "shift": false
+    },
+    "k": {
+      "key": "k",
+      "code": "KeyK",
+      "vk": 75,
+      "text": "k",
+      "shift": false
+    },
+    "l": {
+      "key": "l",
+      "code": "KeyL",
+      "vk": 76,
+      "text": "l",
+      "shift": false
+    },
+    "m": {
+      "key": "m",
+      "code": "KeyM",
+      "vk": 77,
+      "text": "m",
+      "shift": false
+    },
+    "n": {
+      "key": "n",
+      "code": "KeyN",
+      "vk": 78,
+      "text": "n",
+      "shift": false
+    },
+    "o": {
+      "key": "o",
+      "code": "KeyO",
+      "vk": 79,
+      "text": "o",
+      "shift": false
+    },
+    "p": {
+      "key": "p",
+      "code": "KeyP",
+      "vk": 80,
+      "text": "p",
+      "shift": false
+    },
+    "q": {
+      "key": "q",
+      "code": "KeyQ",
+      "vk": 81,
+      "text": "q",
+      "shift": false
+    },
+    "r": {
+      "key": "r",
+      "code": "KeyR",
+      "vk": 82,
+      "text": "r",
+      "shift": false
+    },
+    "s": {
+      "key": "s",
+      "code": "KeyS",
+      "vk": 83,
+      "text": "s",
+      "shift": false
+    },
+    "t": {
+      "key": "t",
+      "code": "KeyT",
+      "vk": 84,
+      "text": "t",
+      "shift": false
+    },
+    "u": {
+      "key": "u",
+      "code": "KeyU",
+      "vk": 85,
+      "text": "u",
+      "shift": false
+    },
+    "v": {
+      "key": "v",
+      "code": "KeyV",
+      "vk": 86,
+      "text": "v",
+      "shift": false
+    },
+    "w": {
+      "key": "w",
+      "code": "KeyW",
+      "vk": 87,
+      "text": "w",
+      "shift": false
+    },
+    "x": {
+      "key": "x",
+      "code": "KeyX",
+      "vk": 88,
+      "text": "x",
+      "shift": false
+    },
+    "y": {
+      "key": "y",
+      "code": "KeyY",
+      "vk": 89,
+      "text": "y",
+      "shift": false
+    },
+    "z": {
+      "key": "z",
+      "code": "KeyZ",
+      "vk": 90,
+      "text": "z",
+      "shift": false
+    },
+    "{": {
+      "key": "{",
+      "code": "BracketLeft",
+      "vk": 219,
+      "text": "{",
+      "shift": true
+    },
+    "|": {
+      "key": "|",
+      "code": "Backslash",
+      "vk": 220,
+      "text": "|",
+      "shift": true
+    },
+    "}": {
+      "key": "}",
+      "code": "BracketRight",
+      "vk": 221,
+      "text": "}",
+      "shift": true
+    },
+    "~": {
+      "key": "~",
+      "code": "Backquote",
+      "vk": 192,
+      "text": "~",
+      "shift": true
+    },
+    "\n": {
+      "key": "Enter",
+      "code": "Enter",
+      "vk": 13,
+      "text": "\r",
+      "shift": false
+    }
+  }
+}

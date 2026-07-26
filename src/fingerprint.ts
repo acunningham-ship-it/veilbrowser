@@ -189,16 +189,27 @@ export function buildAcceptLanguage(languages: string[]): string {
  *     that also hides itself and leaves genuine native/user functions untouched.
  *
  * Values are inlined as JSON so the emitted script has no free variables.
+ *
+ * SHAPE NOTE (load-bearing): this is a STATIC template with exactly one
+ * placeholder, `__VEIL_FP__`, replaced by a JSON object of the nine values the
+ * body reads. It used to interpolate each value at its use site, which read
+ * slightly better but made the script impossible to share: the Python front end
+ * (`python/`) emits the SAME stealth bytes by doing the same one-token
+ * substitution on the same file. Any other arrangement would mean a second
+ * implementation of the fingerprint layer, and two implementations of a stealth
+ * patch drift — which is not a cosmetic problem, it is one front end being
+ * detectable while its tests pass. `tests/python-parity.test.ts` asserts the two
+ * emit byte-identical text for every preset, so a change here that Python cannot
+ * follow fails the build rather than shipping quietly.
  */
-export function buildFingerprintStealth(fp: Fingerprint): string {
-  const j = (v: unknown) => JSON.stringify(v);
-  return String.raw`
+export const FINGERPRINT_STEALTH_BODY = String.raw`
 (() => {
+  const FP = __VEIL_FP__;
   try {
     // --- native-toString masking harness ---------------------------------
     // One Proxy over Function.prototype.toString: our patched functions report
     // native code, the proxy hides itself, and everything else is passed through
-    // (so genuine native fns stay native and user fns keep their real source —
+    // (so genuine native fns stay native and user fns keep their real source --
     // over-masking would be its own tell).
     const nativeToString = Function.prototype.toString;
     const patched = new Map(); // fn -> display label, e.g. "get platform"
@@ -233,26 +244,26 @@ export function buildFingerprintStealth(fp: Fingerprint): string {
     };
 
     // --- navigator (values CDP setUserAgentOverride does not cover) --------
-    defineGetter(Navigator.prototype, "hardwareConcurrency", ${j(fp.hardwareConcurrency)});
-    defineGetter(Navigator.prototype, "deviceMemory", ${j(fp.deviceMemory)});
+    defineGetter(Navigator.prototype, "hardwareConcurrency", FP.hardwareConcurrency);
+    defineGetter(Navigator.prototype, "deviceMemory", FP.deviceMemory);
     // navigator.languages: kept as the clean array (the Accept-Language header
     // carries the q-weights; the JS array must not). Frozen like the real one.
-    defineGetter(Navigator.prototype, "languages", Object.freeze(${j(fp.languages)}));
+    defineGetter(Navigator.prototype, "languages", Object.freeze(FP.languages));
 
     // --- screen inset + colour depth (screen.width/height + DPR come from CDP
     //     setDeviceMetricsOverride; only these are not settable that way) -----
-    defineGetter(Screen.prototype, "availWidth", ${j(fp.screen.availWidth)});
-    defineGetter(Screen.prototype, "availHeight", ${j(fp.screen.availHeight)});
-    defineGetter(Screen.prototype, "colorDepth", ${j(fp.screen.colorDepth)});
-    defineGetter(Screen.prototype, "pixelDepth", ${j(fp.screen.colorDepth)});
+    defineGetter(Screen.prototype, "availWidth", FP.availWidth);
+    defineGetter(Screen.prototype, "availHeight", FP.availHeight);
+    defineGetter(Screen.prototype, "colorDepth", FP.colorDepth);
+    defineGetter(Screen.prototype, "pixelDepth", FP.colorDepth);
 
     // --- WebGL vendor / renderer -------------------------------------------
     // Answer the two UNMASKED_* parameters (37445/37446) with the profile's
     // values; everything else falls through to the real driver. The values must
-    // be plausible for the claimed platform (don't put "Apple GPU" on Windows) —
+    // be plausible for the claimed platform (don't put "Apple GPU" on Windows) --
     // that's the caller's job; presets keep them coherent.
-    const WEBGL_VENDOR = ${j(fp.webglVendor)};
-    const WEBGL_RENDERER = ${j(fp.webglRenderer)};
+    const WEBGL_VENDOR = FP.webglVendor;
+    const WEBGL_RENDERER = FP.webglRenderer;
     const patchGL = (proto) => {
       if (!proto || !proto.getParameter) return;
       const orig = proto.getParameter;
@@ -270,7 +281,7 @@ export function buildFingerprintStealth(fp: Fingerprint): string {
     // return the SAME perturbed bytes (a per-call random would itself be the
     // tell). Different seed -> different pattern -> different hash, so a profile
     // has its own stable canvas/audio fingerprint instead of the host's.
-    const SEED = ${j(fp.seed >>> 0)};
+    const SEED = FP.seed;
     const hash32 = (a, b) => {
       let x = (a ^ Math.imul(b >>> 0, 2654435761)) >>> 0;
       x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; return x >>> 0;
@@ -320,7 +331,7 @@ export function buildFingerprintStealth(fp: Fingerprint): string {
     }
 
     // Audio. Perturb each rendered channel ONCE (WeakSet-guarded) by a tiny
-    // deterministic delta — the classic OfflineAudioContext hash then differs per
+    // deterministic delta -- the classic OfflineAudioContext hash then differs per
     // seed while staying stable across reads, with no accumulation.
     if (window.AudioBuffer) {
       const origGCD = AudioBuffer.prototype.getChannelData;
@@ -341,6 +352,36 @@ export function buildFingerprintStealth(fp: Fingerprint): string {
   } catch (e) {}
 })();
 `;
+
+/**
+ * The nine values the body reads, as a flat object.
+ *
+ * KEY ORDER IS PART OF THE CONTRACT. The emitted script is compared byte-for-byte
+ * against the Python front end's output, and JSON.stringify preserves insertion
+ * order — so reordering these keys is a real (if invisible) change. Add new keys
+ * at the END and add them to the Python side in the same position.
+ */
+export function fingerprintStealthPayload(fp: Fingerprint) {
+  return {
+    hardwareConcurrency: fp.hardwareConcurrency,
+    deviceMemory: fp.deviceMemory,
+    languages: fp.languages,
+    availWidth: fp.screen.availWidth,
+    availHeight: fp.screen.availHeight,
+    colorDepth: fp.screen.colorDepth,
+    webglVendor: fp.webglVendor,
+    webglRenderer: fp.webglRenderer,
+    seed: fp.seed >>> 0,
+  };
+}
+
+/** The injected page-level stealth script for a profile: body + its values. */
+export function buildFingerprintStealth(fp: Fingerprint): string {
+  const json = JSON.stringify(fingerprintStealthPayload(fp));
+  // Replacer as a FUNCTION, not a string: a string replacement treats `$&`/`$'`
+  // as capture references, and these values are attacker-adjacent free text (a
+  // UA or WebGL renderer containing `$` would corrupt the emitted script).
+  return FINGERPRINT_STEALTH_BODY.replace("__VEIL_FP__", () => json);
 }
 
 // --- Preset profiles + consistent randomizer --------------------------------
@@ -442,7 +483,7 @@ export const PRESETS: Record<string, Fingerprint> = {
 
 // Realistic per-OS screen options for the randomizer (avail leaves room for a
 // taskbar / menubar+dock). DPR + colour depth stay with the chosen preset.
-const SCREEN_SETS: Record<string, FingerprintScreen[]> = {
+export const SCREEN_SETS: Record<string, FingerprintScreen[]> = {
   Windows: [
     { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24 },
     { width: 1366, height: 768, availWidth: 1366, availHeight: 728, colorDepth: 24 },
@@ -460,8 +501,8 @@ const SCREEN_SETS: Record<string, FingerprintScreen[]> = {
   ],
 };
 
-const US_TIMEZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles"];
-const TZ_COORDS: Record<string, FingerprintGeolocation> = {
+export const US_TIMEZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles"];
+export const TZ_COORDS: Record<string, FingerprintGeolocation> = {
   "America/New_York": { latitude: 40.7128, longitude: -74.006, accuracy: 60 },
   "America/Chicago": { latitude: 41.8781, longitude: -87.6298, accuracy: 60 },
   "America/Denver": { latitude: 39.7392, longitude: -104.9903, accuracy: 60 },

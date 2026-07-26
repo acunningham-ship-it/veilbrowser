@@ -1,0 +1,236 @@
+{
+  "_generated_from": "src/fingerprint.ts",
+  "presets": {
+    "windows-chrome": {
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.86 Safari/537.36",
+      "platform": "Win32",
+      "platformVersion": "15.0.0",
+      "architecture": "x86",
+      "bitness": "64",
+      "model": "",
+      "mobile": false,
+      "hardwareConcurrency": 16,
+      "deviceMemory": 8,
+      "languages": [
+        "en-US",
+        "en"
+      ],
+      "screen": {
+        "width": 1920,
+        "height": 1080,
+        "availWidth": 1920,
+        "availHeight": 1040,
+        "colorDepth": 24
+      },
+      "devicePixelRatio": 1,
+      "webglVendor": "Google Inc. (Intel)",
+      "webglRenderer": "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "geolocation": {
+        "latitude": 40.7128,
+        "longitude": -74.006,
+        "accuracy": 60
+      },
+      "seed": 1461125121
+    },
+    "mac-chrome": {
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.86 Safari/537.36",
+      "platform": "MacIntel",
+      "platformVersion": "14.6.0",
+      "architecture": "arm",
+      "bitness": "64",
+      "model": "",
+      "mobile": false,
+      "hardwareConcurrency": 10,
+      "deviceMemory": 8,
+      "languages": [
+        "en-US",
+        "en"
+      ],
+      "screen": {
+        "width": 1512,
+        "height": 982,
+        "availWidth": 1512,
+        "availHeight": 944,
+        "colorDepth": 30
+      },
+      "devicePixelRatio": 2,
+      "webglVendor": "Google Inc. (Apple)",
+      "webglRenderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+      "timezone": "America/Los_Angeles",
+      "locale": "en-US",
+      "geolocation": {
+        "latitude": 34.0522,
+        "longitude": -118.2437,
+        "accuracy": 60
+      },
+      "seed": 1461125122
+    },
+    "linux-chrome": {
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.86 Safari/537.36",
+      "platform": "Linux x86_64",
+      "platformVersion": "",
+      "architecture": "x86",
+      "bitness": "64",
+      "model": "",
+      "mobile": false,
+      "hardwareConcurrency": 8,
+      "deviceMemory": 8,
+      "languages": [
+        "en-US",
+        "en"
+      ],
+      "screen": {
+        "width": 1920,
+        "height": 1080,
+        "availWidth": 1920,
+        "availHeight": 1053,
+        "colorDepth": 24
+      },
+      "devicePixelRatio": 1,
+      "webglVendor": "Google Inc. (Intel)",
+      "webglRenderer": "ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL 4.6)",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "geolocation": {
+        "latitude": 40.7128,
+        "longitude": -74.006,
+        "accuracy": 60
+      },
+      "seed": 1461125123
+    },
+    "android-chrome": {
+      "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.86 Mobile Safari/537.36",
+      "platform": "Linux armv8l",
+      "platformVersion": "14.0.0",
+      "architecture": "arm",
+      "bitness": "64",
+      "model": "Pixel 8",
+      "mobile": true,
+      "hardwareConcurrency": 8,
+      "deviceMemory": 8,
+      "languages": [
+        "en-US",
+        "en"
+      ],
+      "screen": {
+        "width": 412,
+        "height": 915,
+        "availWidth": 412,
+        "availHeight": 915,
+        "colorDepth": 24
+      },
+      "devicePixelRatio": 2.625,
+      "webglVendor": "Google Inc. (Qualcomm)",
+      "webglRenderer": "ANGLE (Qualcomm, Adreno (TM) 730, OpenGL ES 3.2)",
+      "timezone": "America/New_York",
+      "locale": "en-US",
+      "geolocation": {
+        "latitude": 40.7128,
+        "longitude": -74.006,
+        "accuracy": 60
+      },
+      "seed": 1461125124
+    }
+  },
+  "screenSets": {
+    "Windows": [
+      {
+        "width": 1920,
+        "height": 1080,
+        "availWidth": 1920,
+        "availHeight": 1040,
+        "colorDepth": 24
+      },
+      {
+        "width": 1366,
+        "height": 768,
+        "availWidth": 1366,
+        "availHeight": 728,
+        "colorDepth": 24
+      },
+      {
+        "width": 2560,
+        "height": 1440,
+        "availWidth": 2560,
+        "availHeight": 1400,
+        "colorDepth": 24
+      },
+      {
+        "width": 1536,
+        "height": 864,
+        "availWidth": 1536,
+        "availHeight": 824,
+        "colorDepth": 24
+      }
+    ],
+    "macOS": [
+      {
+        "width": 1512,
+        "height": 982,
+        "availWidth": 1512,
+        "availHeight": 944,
+        "colorDepth": 30
+      },
+      {
+        "width": 1440,
+        "height": 900,
+        "availWidth": 1440,
+        "availHeight": 862,
+        "colorDepth": 30
+      },
+      {
+        "width": 1728,
+        "height": 1117,
+        "availWidth": 1728,
+        "availHeight": 1079,
+        "colorDepth": 30
+      }
+    ],
+    "Linux": [
+      {
+        "width": 1920,
+        "height": 1080,
+        "availWidth": 1920,
+        "availHeight": 1053,
+        "colorDepth": 24
+      },
+      {
+        "width": 1366,
+        "height": 768,
+        "availWidth": 1366,
+        "availHeight": 741,
+        "colorDepth": 24
+      }
+    ]
+  },
+  "usTimezones": [
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles"
+  ],
+  "tzCoords": {
+    "America/New_York": {
+      "latitude": 40.7128,
+      "longitude": -74.006,
+      "accuracy": 60
+    },
+    "America/Chicago": {
+      "latitude": 41.8781,
+      "longitude": -87.6298,
+      "accuracy": 60
+    },
+    "America/Denver": {
+      "latitude": 39.7392,
+      "longitude": -104.9903,
+      "accuracy": 60
+    },
+    "America/Los_Angeles": {
+      "latitude": 34.0522,
+      "longitude": -118.2437,
+      "accuracy": 60
+    }
+  }
+}

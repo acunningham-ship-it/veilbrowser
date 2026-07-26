@@ -115,7 +115,40 @@ export declare function buildAcceptLanguage(languages: string[]): string;
  *     that also hides itself and leaves genuine native/user functions untouched.
  *
  * Values are inlined as JSON so the emitted script has no free variables.
+ *
+ * SHAPE NOTE (load-bearing): this is a STATIC template with exactly one
+ * placeholder, `__VEIL_FP__`, replaced by a JSON object of the nine values the
+ * body reads. It used to interpolate each value at its use site, which read
+ * slightly better but made the script impossible to share: the Python front end
+ * (`python/`) emits the SAME stealth bytes by doing the same one-token
+ * substitution on the same file. Any other arrangement would mean a second
+ * implementation of the fingerprint layer, and two implementations of a stealth
+ * patch drift — which is not a cosmetic problem, it is one front end being
+ * detectable while its tests pass. `tests/python-parity.test.ts` asserts the two
+ * emit byte-identical text for every preset, so a change here that Python cannot
+ * follow fails the build rather than shipping quietly.
  */
+export declare const FINGERPRINT_STEALTH_BODY: string;
+/**
+ * The nine values the body reads, as a flat object.
+ *
+ * KEY ORDER IS PART OF THE CONTRACT. The emitted script is compared byte-for-byte
+ * against the Python front end's output, and JSON.stringify preserves insertion
+ * order — so reordering these keys is a real (if invisible) change. Add new keys
+ * at the END and add them to the Python side in the same position.
+ */
+export declare function fingerprintStealthPayload(fp: Fingerprint): {
+    hardwareConcurrency: number;
+    deviceMemory: number;
+    languages: string[];
+    availWidth: number;
+    availHeight: number;
+    colorDepth: number;
+    webglVendor: string;
+    webglRenderer: string;
+    seed: number;
+};
+/** The injected page-level stealth script for a profile: body + its values. */
 export declare function buildFingerprintStealth(fp: Fingerprint): string;
 /**
  * Ready-made, internally-consistent profiles. Each is a REAL Chrome-131 identity
@@ -126,6 +159,9 @@ export declare function buildFingerprintStealth(fp: Fingerprint): string;
  * Use one directly, or as the coherent base for `Fingerprint.random`.
  */
 export declare const PRESETS: Record<string, Fingerprint>;
+export declare const SCREEN_SETS: Record<string, FingerprintScreen[]>;
+export declare const US_TIMEZONES: string[];
+export declare const TZ_COORDS: Record<string, FingerprintGeolocation>;
 export declare namespace Fingerprint {
     /** The named presets, also reachable as `Fingerprint.presets`. */
     const presets: Record<string, Fingerprint>;

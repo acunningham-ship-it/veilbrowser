@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.3.0 — 2026-07-26
+
+### Added
+- **A Python front end** (`python/`, `pip install git+…#subdirectory=python`) with
+  `Browser.launch()` / `Browser.connect()` / `pages()` and a selector-based Page API
+  (`goto`, `click`, `fill`, `type`, `press`, `select`, `wait_for_selector`,
+  `wait_for_response`, `screenshot`, `pdf`, cookies, `evaluate`). One dependency
+  (`websockets`); everything else is stdlib, because a stealth tool with someone
+  else's HTTP stack in the middle of it is not one.
+
+  **The stealth layer is not reimplemented.** The injected script, the launch flags,
+  the profile identities and the keystroke table are GENERATED from the TypeScript
+  source into `python/veilbrowser/_assets/` by `tools-gen-python-assets.ts`, and
+  `tests/python-parity.test.ts` fails the build if Python's assembled script differs
+  from the TypeScript one by a single byte. Two hand-maintained copies of a stealth
+  patch drift, and a drifted patch does not fail loudly — one front end just becomes
+  detectable while all of its own tests stay green.
+
+  Verified: 21 checks against a real Chrome, run from the INSTALLED wheel outside the
+  source tree (`python/tests/test_smoke.py`) — webdriver false, UA/platform/screen/
+  timezone/WebGL from the profile, getters masked as `[native code]` and inherited
+  from the prototype rather than own-properties, canvas noise stable across reads,
+  real keyCodes (not 0), and `close()` on an attached browser leaving it alive.
+
+  Deliberately not ported: the snapshot/ref system, auto-Xvfb, downloads, FedCM,
+  frame switching. `Fingerprint.random(seed)` is deterministic but does not match the
+  TypeScript `random(seed)` — different PRNGs, and nothing needs the two languages to
+  agree on a random identity, only on the stealth script.
+- `CHROME_FLAGS_LEAD` / `CHROME_FLAGS_TAIL` and `FINGERPRINT_STEALTH_BODY` are now
+  exported, so the flag list and the injected body have one definition shared by both
+  front ends instead of a copy in each.
+
+### Fixed
+- **The injected scripts are now pure ASCII, and a test enforces it.** Bun's
+  transpiler escapes non-ASCII to `\uXXXX`, which is value-preserving in a normal
+  template but NOT in `String.raw`, where the raw text IS the value: measured,
+  ``String.raw`a—b` `` is 3 characters under node and **8 under bun**, with the
+  literal characters `\ u 2 0 1 4` ending up in the script served to the page. Veil
+  runs under bun, so the em dashes in the stealth patch's comments were reaching
+  pages as escape sequences. All seven occurrences were inside `//` comments, so
+  nothing was broken — but one non-ASCII character inside a string VALUE would have
+  silently changed what the patch does, differently per runtime. Keeping these
+  templates ASCII removes the class of bug, and it is what makes byte-parity with
+  Python possible at all (node, bun and Python now emit identical bytes for every
+  preset).
+
 ## 1.2.0 — 2026-07-26
 
 ### Added

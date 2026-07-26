@@ -1,30 +1,7 @@
-export function buildStealth(opts = {}) {
-    const maskWebgl = opts.maskWebgl ?? false;
-    const vendor = opts.webglVendor ?? "Google Inc. (Intel)";
-    const renderer = opts.webglRenderer ?? "ANGLE (Intel, Mesa Intel(R) UHD Graphics)";
-    // Only emitted for SwiftShader hosts. When present it also needs the toString
-    // mask so the getParameter override can't be read back as non-native.
-    const webglBlock = maskWebgl
-        ? String.raw `
-  try {
-    const proto = WebGLRenderingContext && WebGLRenderingContext.prototype;
-    if (proto) {
-      const getParameter = proto.getParameter;
-      proto.getParameter = function (p) {
-        if (p === 37445) return ${JSON.stringify(vendor)};
-        if (p === 37446) return ${JSON.stringify(renderer)};
-        return getParameter.apply(this, arguments);
-      };
-      const native = Function.prototype.toString;
-      const masked = proto.getParameter;
-      Function.prototype.toString = function () {
-        if (this === masked || this === Function.prototype.toString) return 'function () { [native code] }';
-        return native.call(this);
-      };
-    }
-  } catch (e) {}`
-        : "";
-    return String.raw `
+/* GENERATED FROM src/stealth.ts buildStealth() by tools-gen-python-assets.ts — DO NOT EDIT.
+   Edit the TypeScript source and re-run the generator; tests/python-parity.test.ts
+   fails if this file and the TS disagree. */
+
 (() => {
   const patchGetter = (obj, prop, value) => {
     try { Object.defineProperty(obj, prop, { get: () => value, configurable: true, enumerable: true }); } catch (e) {}
@@ -63,9 +40,5 @@ export function buildStealth(opts = {}) {
   // (Chrome caps deviceMemory at 8; a real desktop has a taskbar), so nothing needs
   // patching. On a headless server box that leaks an out-of-spec deviceMemory, fix
   // it at the source (the host), never with a getter a page can unmask.
-${webglBlock}
+
 })();
-`;
-}
-/** Default stealth source: self-gating, no WebGL masking (authentic GPU fingerprint). */
-export const STEALTH_SOURCE = buildStealth();

@@ -1,0 +1,16 @@
+{
+  "_generated_from": "src/launcher.ts",
+  "lead": [
+    "--remote-debugging-port=0",
+    "--remote-allow-origins=*"
+  ],
+  "tail": [
+    "--disable-blink-features=AutomationControlled",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-features=Translate,OptimizationHints",
+    "--password-store=basic",
+    "--homepage=about:blank",
+    "about:blank"
+  ]
+}

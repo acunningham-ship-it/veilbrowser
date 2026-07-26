@@ -82,6 +82,36 @@ const png = await page.screenshot();  // PNG buffer for a vision model
 await browser.close();
 ```
 
+## Python
+
+There is a Python front end in [`python/`](python/) with the same core API:
+
+```bash
+pip install git+https://github.com/acunningham-ship-it/veilbrowser.git#subdirectory=python
+```
+
+```python
+import asyncio
+from veilbrowser import Browser, Fingerprint
+
+async def main():
+    async with await Browser.launch(fingerprint=Fingerprint.preset("windows-chrome")) as b:
+        page = await b.new_page()
+        await page.goto("https://example.com")
+        print(await page.title())
+
+asyncio.run(main())
+```
+
+**The stealth layer has one implementation, not two.** The injected script, the launch
+flags, the profile identities and the keystroke table are generated from this
+TypeScript source into `python/veilbrowser/_assets/` by `tools-gen-python-assets.ts`,
+and `tests/python-parity.test.ts` fails the build if Python's assembled script differs
+from the TypeScript one by a single byte. That matters because a drifted stealth patch
+does not fail loudly — one front end simply becomes detectable while all of its own
+tests stay green. See [python/README.md](python/README.md) for the API and for what is
+deliberately not ported.
+
 ## How the stealth works
 
 1. **Launch (`launcher.ts`)** — a real Chrome with the flags a *normal* profile uses,
@@ -352,6 +382,8 @@ Local dev alternative (from a checkout, no build step):
 bun run examples/selftest.ts   # end-to-end: launch, stealth, snapshot, interact
 bun run examples/detect.ts     # bot-detection scorecard (bot.sannysoft.com, etc.)
 bun test                       # unit tests (browser-launching ones skip under CI)
+
+DISPLAY=:98 python3 python/tests/test_smoke.py   # 21 checks, Python front end vs real Chrome
 ```
 
 Unit tests cover:
@@ -360,6 +392,7 @@ Unit tests cover:
 - **CDP framing (`cdp-messages.test.ts`)**: JSON-RPC structure, sessionId routing, command/response correlation
 - **Private-network classifier (`private-host.test.ts`)**: loopback/RFC1918 vs public host detection (the block's decision)
 - **Lifecycle (`lifecycle.test.ts`, local only)**: launch/close, process-group reaping, profile-lock refusal
+- **Python parity (`python-parity.test.ts`)**: the Python front end's assembled stealth script is byte-identical to this one for every preset, the committed generated assets match what the generator emits now, and the injected scripts are pure ASCII (bun's transpiler corrupts non-ASCII inside `String.raw`)
 
 ## Status
 
