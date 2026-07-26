@@ -701,10 +701,41 @@ export class Page {
     this.mouse = target;
   }
 
+  /**
+   * Re-read an element's live centre, instead of trusting the one snapshot()
+   * recorded. Any re-render between snapshot and action — a banner appearing,
+   * a list growing, an accordion opening, lazy images landing — moves the
+   * element, and the recorded centre then points at whatever slid into those
+   * coordinates. Dispatching a real mouse event there clicks the wrong thing
+   * and throws nothing, which is the worst shape a failure can take for an
+   * agent: it looks like it worked.
+   *
+   * Throws if the node has detached or has no layout box (display:none,
+   * removed, collapsed) rather than clicking empty space. Also refreshes the
+   * cached centre so a later action on the same ref starts from truth.
+   */
+  private async freshCenter(ref: number, action: string): Promise<Point> {
+    const target = this.refs.get(ref);
+    if (!target) {
+      throw new Error(
+        `${action}: no element with ref ${ref} — this snapshot has ${this.refs.size} refs. Call snapshot() first.`,
+      );
+    }
+    const center = await this.boxCenter(target.backendNodeId);
+    if (!center) {
+      throw new Error(
+        `${action}: ref ${ref} is no longer clickable — the node has detached or has no layout box ` +
+          `(removed, display:none, or zero-sized). Re-run snapshot() after the page changes.`,
+      );
+    }
+    target.center = center; // keep the cache honest for the next action on this ref
+    return center;
+  }
+
   /** Click an element by its snapshot ref. */
   async click(ref: number) {
-    const target = this.refs.get(ref);
-    if (!target) throw new Error(`No element with ref ${ref}. Call snapshot() first.`);
+    const center = await this.freshCenter(ref, "click");
+    const target = { center };
     await this.moveTo(target.center);
     await sleep(this.rng.range(30, 90));
     const common = { x: target.center.x, y: target.center.y, button: "left", clickCount: 1 };
@@ -735,11 +766,12 @@ export class Page {
     await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...upCommon });
   }
 
-  /** Drag an element by snapshot ref to an absolute viewport point. */
+  /** Drag an element by snapshot ref to an absolute viewport point. Re-reads the
+   *  source centre first — a drag from a stale coordinate grabs whatever moved
+   *  into that spot, which on a board UI means dragging the wrong card. */
   async dragRefTo(ref: number, toX: number, toY: number) {
-    const from = this.refs.get(ref);
-    if (!from) throw new Error(`No element with ref ${ref}. Call snapshot() first.`);
-    await this.dragCore(from.center.x, from.center.y, toX, toY);
+    const from = await this.freshCenter(ref, "dragRefTo");
+    await this.dragCore(from.x, from.y, toX, toY);
   }
 
   /** Drag between two absolute viewport points — for when neither the source
