@@ -1296,13 +1296,38 @@ export class Page {
    * page has several. Paths must be absolute.
    */
   async uploadFile(paths: string[], selector = 'input[type="file"]') {
+    for (const p of paths) {
+      if (!p.startsWith("/")) throw new Error(`uploadFile: paths must be absolute, got ${JSON.stringify(p)}`);
+    }
     const { root } = await this.send("DOM.getDocument", { depth: 0 });
-    const { nodeId } = await this.send("DOM.querySelector", {
-      nodeId: root.nodeId,
-      selector,
+    const { nodeId } = await this.send("DOM.querySelector", { nodeId: root.nodeId, selector });
+    if (nodeId) {
+      await this.send("DOM.setFileInputFiles", { files: paths, nodeId });
+      return;
+    }
+
+    // DOM.querySelector does not cross shadow boundaries, so a file input owned
+    // by a web component looked absent. Fall back to a shadow-piercing search
+    // and drive it by objectId instead of nodeId.
+    const { result } = await this.send("Runtime.evaluate", {
+      expression:
+        `(() => { const q = ${JSON.stringify(selector)};` +
+        ` const walk = (root, depth) => { if (depth > 10) return null;` +
+        `   const hit = root.querySelector(q); if (hit) return hit;` +
+        `   for (const el of root.querySelectorAll("*")) {` +
+        `     if (el.shadowRoot) { const deep = walk(el.shadowRoot, depth + 1); if (deep) return deep; } }` +
+        `   return null; };` +
+        ` return walk(document, 0); })()`,
     });
-    if (!nodeId) throw new Error(`uploadFile: no element matching ${selector}`);
-    await this.send("DOM.setFileInputFiles", { files: paths, nodeId });
+    const objectId = result?.objectId;
+    if (!objectId) {
+      throw new Error(`uploadFile: no element matching ${selector} (searched the document and any open shadow roots)`);
+    }
+    try {
+      await this.send("DOM.setFileInputFiles", { files: paths, objectId });
+    } finally {
+      this.send("Runtime.releaseObject", { objectId }).catch(() => {});
+    }
   }
 
   /**
