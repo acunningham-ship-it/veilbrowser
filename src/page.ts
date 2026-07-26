@@ -1337,9 +1337,48 @@ export class Page {
       PageUp: { code: "PageUp", vk: 33 },
       PageDown: { code: "PageDown", vk: 34 },
     };
-    const k = KEYS[key];
-    if (!k) throw new Error(`press: unsupported key ${key} (known: ${Object.keys(KEYS).join(", ")})`);
-    await this.sendKey({ key, code: k.code, vk: k.vk, text: k.text });
+    // Modifier combos: "Control+a", "Shift+Tab", "Control+Shift+k", "Meta+c".
+    // Agents need these constantly — select-all before retyping, copy/paste,
+    // Shift+Tab to walk a form backwards, Ctrl+Enter to submit — and every one
+    // of them was previously unreachable through the public API even though
+    // sendKey already understood modifiers.
+    const parts = key.split("+");
+    const bare = parts.pop() ?? "";
+    let modifiers = 0;
+    for (const p of parts) {
+      const m = p.trim().toLowerCase();
+      if (m === "alt") modifiers |= 1;
+      else if (m === "control" || m === "ctrl") modifiers |= 2;
+      else if (m === "meta" || m === "cmd" || m === "command") modifiers |= 4;
+      else if (m === "shift") modifiers |= 8;
+      else throw new Error(`press: unknown modifier ${JSON.stringify(p)} in ${JSON.stringify(key)} (Alt, Control, Meta, Shift)`);
+    }
+
+    const named = KEYS[bare];
+    if (!named && bare.length !== 1) {
+      // Message shape is part of the contract — tests/key-dispatch.test.ts
+      // matches on it. Keep "unsupported key <k>" unquoted.
+      throw new Error(
+        `press: unsupported key ${bare} — use a single character or one of: ${Object.keys(KEYS).join(", ")}`,
+      );
+    }
+
+    // With a non-Shift modifier held, the chord is a COMMAND, not text: sending
+    // a char event too would type a literal "a" into the field alongside the
+    // Ctrl+A. Shift alone still produces text (an uppercase letter).
+    const isCommand = (modifiers & ~8) !== 0;
+    if (named) {
+      await this.sendKey({ key: bare, code: named.code, vk: named.vk, text: isCommand ? undefined : named.text, modifiers });
+      return;
+    }
+    const info = keyInfo(bare);
+    await this.sendKey({
+      key: info.key,
+      code: info.code,
+      vk: info.vk,
+      text: isCommand ? undefined : info.text,
+      modifiers: modifiers || (info.shift ? 8 : 0),
+    });
   }
 
   // --- FedCM: drive federated sign-in ("Sign in with Google" one-tap, etc.) ---
