@@ -542,10 +542,30 @@ export class Page {
       this.sessionId,
     );
     let loaderId: string | undefined;
+    let offWithin: (() => void) | undefined;
     try {
       // Arm the waiter BEFORE navigating: we can't miss loadEventFired, and a
       // networkidle waiter is already counting the navigation's own requests.
       const waiter = this.waitForLoad(opts.waitUntil ?? "load", timeout);
+      // A SAME-DOCUMENT navigation — a #fragment, or history/pushState — never
+      // fires loadEventFired, because no new document loads. Waiting for it hangs
+      // for the whole timeout and then throws. Measured on Chrome 150:
+      // goto("https://example.com/#x") FAILED after 15001ms while real navigations
+      // to the same origin took ~300ms. Anchor links and SPA routes are ordinary
+      // things for an agent to follow, so this was a 30s stall (default timeout) on
+      // a completely common path.
+      //
+      // Race Chrome's own same-document signal against the load waiter rather than
+      // string-comparing the URLs: a comparison would have to normalise trailing
+      // slashes, relative hrefs and percent-encoding, and would STILL miss
+      // pushState navigations that change the path with no document load.
+      const withinDoc = new Promise<"within">((resolve) => {
+        offWithin = this.cdp.on(
+          "Page.navigatedWithinDocument",
+          () => resolve("within"),
+          this.sessionId,
+        );
+      });
       // Page.navigate resolves with { frameId, loaderId, errorText? }. On a DNS or
       // connection failure Chrome STILL fires loadEventFired for its own error page,
       // so the load event alone can't tell success from failure — errorText can.
@@ -555,8 +575,13 @@ export class Page {
         throw new Error(`goto(${url}) failed: ${nav.errorText}`);
       }
       loaderId = nav?.loaderId;
-      await waiter;
+      // Whichever signal arrives first wins. On a same-document navigation the load
+      // waiter will never settle, so swallow it — otherwise it surfaces as an
+      // unhandled rejection long after goto() has already returned successfully.
+      const how = await Promise.race([waiter.then(() => "loaded" as const), withinDoc]);
+      if (how === "within") waiter.catch(() => {});
     } finally {
+      offWithin?.();
       offResp();
     }
     await sleep(this.rng.range(150, 400)); // settle, like a human reading

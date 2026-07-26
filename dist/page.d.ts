@@ -77,6 +77,11 @@ export declare class Page {
     private activeSessionId;
     private frameSessions;
     private frameOff?;
+    private recentResponses;
+    private downloadDir?;
+    private pendingDownloads;
+    private downloadWaiter;
+    private finishedDownload;
     private fedcmOff?;
     private fedcmQueue;
     private fedcmWaiters;
@@ -232,6 +237,34 @@ export declare class Page {
      *  itself carries mousemove-with-button-held events a drag-and-drop library
      *  listens for, not plain hover moves. */
     private moveTo;
+    /**
+     * Re-read an element's live centre, instead of trusting the one snapshot()
+     * recorded. Any re-render between snapshot and action — a banner appearing,
+     * a list growing, an accordion opening, lazy images landing — moves the
+     * element, and the recorded centre then points at whatever slid into those
+     * coordinates. Dispatching a real mouse event there clicks the wrong thing
+     * and throws nothing, which is the worst shape a failure can take for an
+     * agent: it looks like it worked.
+     *
+     * Throws if the node has detached or has no layout box (display:none,
+     * removed, collapsed) rather than clicking empty space. Also refreshes the
+     * cached centre so a later action on the same ref starts from truth.
+     */
+    private freshCenter;
+    /**
+     * Hit-test the point we are about to click: is the target actually the
+     * topmost element there? A real mouse event goes to whatever is on top, which
+     * on a live page is routinely a cookie banner, a modal backdrop, a sticky
+     * header, or a loading veil that hasn't torn down. The overlay takes the
+     * click, the target never fires, and nothing throws.
+     *
+     * Deliberately tuned for PRECISION, not recall — this runs on every click, so
+     * a false positive breaks working code, which is the failure that gets a
+     * check deleted. Anything in the same containment chain (a <span> inside the
+     * button, or a wrapper around it) is treated as a hit. Only a genuinely
+     * unrelated topmost element counts as occlusion.
+     */
+    private assertHittable;
     /** Click an element by its snapshot ref. */
     click(ref: number): Promise<void>;
     /**
@@ -245,7 +278,9 @@ export declare class Page {
      * veil_screenshot.
      */
     private dragCore;
-    /** Drag an element by snapshot ref to an absolute viewport point. */
+    /** Drag an element by snapshot ref to an absolute viewport point. Re-reads the
+     *  source centre first — a drag from a stale coordinate grabs whatever moved
+     *  into that spot, which on a board UI means dragging the wrong card. */
     dragRefTo(ref: number, toX: number, toY: number): Promise<void>;
     /** Drag between two absolute viewport points — for when neither the source
      *  card nor the drop target has a resolvable snapshot ref. */
@@ -279,7 +314,22 @@ export declare class Page {
      *  domain like the rest of our key dispatch. Playwright's fill() clears first;
      *  without this, filling a pre-populated input yields "oldnewvalue". */
     private clearField;
-    /** Click a field, clear any existing value, then type into it. */
+    /**
+     * Click a field, clear any existing value, then type into it.
+     *
+     * Guarded at both ends, because every step after the click is a BLIND
+     * keyboard dispatch to whatever currently holds focus. If focus never landed
+     * in an editable field, Ctrl+A selects the whole document, Delete does
+     * nothing useful, the text goes nowhere — and fill() used to return
+     * successfully, leaving the agent believing a form was filled.
+     *
+     *  - before touching the page: refuse a target that cannot accept text
+     *    (disabled, readonly, or simply not a field), so a bad ref can't clobber
+     *    the document selection
+     *  - after the click: confirm the element actually took focus. A cookie
+     *    banner, modal, or sticky header covering the field swallows the click,
+     *    and this is where that shows up as an error instead of as lost text.
+     */
     fill(ref: number, text: string): Promise<void>;
     /** Resolve a snapshot ref to a live JS object handle (objectId) — the bridge
      *  from an accessibility-tree ref to callFunctionOn, so we can read/drive one
@@ -370,6 +420,63 @@ export declare class Page {
         visible?: boolean;
         poll?: number;
     }): Promise<void>;
+    /**
+     * Wait for a network response whose URL contains `match` (string) or matches
+     * it (RegExp), and return its status.
+     *
+     * The gap this fills: an agent clicks Save, the button goes into a spinner,
+     * and the only ways to find out whether the write actually succeeded were to
+     * poll the DOM for a toast that may never appear, or to sleep and hope. The
+     * status code is the ground truth and it was not reachable at all.
+     *
+     * Resolves for a matching response even if it arrives before the await —
+     * responses seen since the last goto() are checked first, so the very common
+     * "click, then wait" ordering doesn't race. `status` is reported as-is; a 500
+     * RESOLVES rather than rejecting, because "the request failed" is an answer
+     * the caller wants, not an exception. Only a timeout rejects.
+     */
+    waitForResponse(match: string | RegExp, opts?: {
+        timeout?: number;
+    }): Promise<{
+        url: string;
+        status: number;
+        ok: boolean;
+    }>;
+    /** Keep a small window of recent responses so waitForResponse() can be called
+     *  AFTER the click that triggered the request without losing the race. Bounded
+     *  so a chatty SPA can't grow it without limit, and cleared on navigation. */
+    private trackResponses;
+    /**
+     * Turn downloads on and send them to `dir`.
+     *
+     * Chrome running under CDP cancels downloads by default, so clicking an
+     * export/report/invoice link did nothing at all and reported nothing — the
+     * agent saw a successful click and no file. This opts the target in and
+     * enables the progress events waitForDownload() listens for.
+     *
+     * `dir` must be an absolute path that already exists; Chrome will not create
+     * it, and a missing directory fails silently at the browser layer.
+     */
+    enableDownloads(dir: string): Promise<void>;
+    /**
+     * Wait for the next download to finish and return where it landed.
+     *
+     * Call it AFTER the click that starts the download — the events are tracked
+     * from enableDownloads() onward, so a download that completes before you
+     * await is still returned rather than lost to a race.
+     *
+     * Rejects on a download Chrome cancelled, and on timeout, instead of hanging
+     * or handing back a path to a file that isn't there.
+     */
+    waitForDownload(opts?: {
+        timeout?: number;
+    }): Promise<{
+        filename: string;
+        path: string;
+        url: string;
+    }>;
+    /** Wire the Browser download events once, at init. */
+    private trackDownloads;
     /**
      * Attach local files to a file `<input>` — even a hidden one — without an OS
      * file picker. Uses CDP DOM.setFileInputFiles (the same primitive Playwright

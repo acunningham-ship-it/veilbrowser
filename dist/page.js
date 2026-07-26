@@ -157,6 +157,25 @@ export function keyInfo(ch) {
         return { key: ch, code: sym.code, vk: sym.vk, text: ch, shift: SHIFTED_SYMBOLS.has(ch) };
     return { key: ch, code: "", vk: 0, text: ch, shift: false };
 }
+/** Run `fn` over `items` with at most `limit` in flight, preserving input order.
+ *  Bounded on purpose: firing 500 CDP commands at once is a good way to make
+ *  one slow page look like a hung browser. */
+async function mapConcurrent(items, limit, fn) {
+    const out = new Array(items.length);
+    let next = 0;
+    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+        for (;;) {
+            const i = next++;
+            if (i >= items.length)
+                return;
+            out[i] = await fn(items[i]);
+        }
+    });
+    await Promise.all(workers);
+    return out;
+}
+/** How many DOM.getBoxModel calls snapshot() keeps in flight. */
+const BOX_BATCH = 24;
 export class Page {
     cdp;
     sessionId;
@@ -177,6 +196,17 @@ export class Page {
     activeSessionId;
     frameSessions = [];
     frameOff;
+    // Download state (see enableDownloads / waitForDownload). Chrome under CDP
+    // cancels downloads unless a target opts in, so this stays inert until asked.
+    // `finishedDownload` exists because a small file can complete before the
+    // caller awaits — without it, that download is lost to a race.
+    // Recent Network.responseReceived, so waitForResponse() can be called AFTER
+    // the click that caused the request without losing the race. Cleared on nav.
+    recentResponses = [];
+    downloadDir;
+    pendingDownloads = new Map();
+    downloadWaiter = null;
+    finishedDownload = null;
     // FedCM interception state (see enableFedCm).
     fedcmOff;
     fedcmQueue = [];
@@ -205,6 +235,8 @@ export class Page {
         await this.send("Page.enable");
         await this.send("DOM.enable");
         await this.send("Accessibility.enable");
+        this.trackDownloads(); // listeners only — downloads stay off until enableDownloads()
+        this.trackResponses();
         // A fingerprint owns the UA + client hints; without one, just scrub any
         // leaked HeadlessChrome token from the real UA.
         if (!opts.fingerprint)
@@ -436,6 +468,7 @@ export class Page {
      *  can't leak across the nav and a leftover ref can't click wrong coords. */
     async goto(url, opts = {}) {
         this.refs.clear();
+        this.recentResponses = [];
         this.activeSessionId = this.sessionId;
         const timeout = opts.timeout ?? 30000;
         // Capture the main document's HTTP status so callers can detect 4xx/5xx: match
@@ -446,10 +479,26 @@ export class Page {
         const offResp = this.cdp.on("Network.responseReceived", (p) => { if (p.type === "Document" && p.loaderId)
             docStatus.set(p.loaderId, p.response?.status); }, this.sessionId);
         let loaderId;
+        let offWithin;
         try {
             // Arm the waiter BEFORE navigating: we can't miss loadEventFired, and a
             // networkidle waiter is already counting the navigation's own requests.
             const waiter = this.waitForLoad(opts.waitUntil ?? "load", timeout);
+            // A SAME-DOCUMENT navigation — a #fragment, or history/pushState — never
+            // fires loadEventFired, because no new document loads. Waiting for it hangs
+            // for the whole timeout and then throws. Measured on Chrome 150:
+            // goto("https://example.com/#x") FAILED after 15001ms while real navigations
+            // to the same origin took ~300ms. Anchor links and SPA routes are ordinary
+            // things for an agent to follow, so this was a 30s stall (default timeout) on
+            // a completely common path.
+            //
+            // Race Chrome's own same-document signal against the load waiter rather than
+            // string-comparing the URLs: a comparison would have to normalise trailing
+            // slashes, relative hrefs and percent-encoding, and would STILL miss
+            // pushState navigations that change the path with no document load.
+            const withinDoc = new Promise((resolve) => {
+                offWithin = this.cdp.on("Page.navigatedWithinDocument", () => resolve("within"), this.sessionId);
+            });
             // Page.navigate resolves with { frameId, loaderId, errorText? }. On a DNS or
             // connection failure Chrome STILL fires loadEventFired for its own error page,
             // so the load event alone can't tell success from failure — errorText can.
@@ -459,9 +508,15 @@ export class Page {
                 throw new Error(`goto(${url}) failed: ${nav.errorText}`);
             }
             loaderId = nav?.loaderId;
-            await waiter;
+            // Whichever signal arrives first wins. On a same-document navigation the load
+            // waiter will never settle, so swallow it — otherwise it surfaces as an
+            // unhandled rejection long after goto() has already returned successfully.
+            const how = await Promise.race([waiter.then(() => "loaded"), withinDoc]);
+            if (how === "within")
+                waiter.catch(() => { });
         }
         finally {
+            offWithin?.();
             offResp();
         }
         await sleep(this.rng.range(150, 400)); // settle, like a human reading
@@ -573,6 +628,13 @@ export class Page {
         this.refs.clear();
         const elements = [];
         let ref = 0;
+        // Two passes on purpose. Pass 1 filters cheaply in memory; pass 2 asks
+        // Chrome for the layout boxes ALL AT ONCE. The old shape awaited one
+        // DOM.getBoxModel per candidate inside the loop, so a 150-element page paid
+        // 150 sequential round-trips and a real app page (500+) paid 500. The CDP
+        // client keys pending replies by message id, so concurrent commands are
+        // safe; batching keeps one slow reply from blocking the rest.
+        const candidates = [];
         for (const n of nodes) {
             if (n.ignored)
                 continue;
@@ -585,13 +647,19 @@ export class Page {
             const backendNodeId = n.backendDOMNodeId;
             if (!backendNodeId)
                 continue;
-            const center = await this.boxCenter(backendNodeId);
+            candidates.push({ backendNodeId, role, name, value: n.value?.value });
+        }
+        const centers = await mapConcurrent(candidates, BOX_BATCH, (c) => this.boxCenter(c.backendNodeId));
+        // Ref numbering stays in accessibility-tree order — an agent re-reading a
+        // snapshot must see stable, ascending refs regardless of reply ordering.
+        for (let i = 0; i < candidates.length; i++) {
+            const center = centers[i];
             if (!center)
                 continue; // not visible / no layout box
+            const c = candidates[i];
             ref++;
-            const value = n.value?.value;
-            this.refs.set(ref, { backendNodeId, center });
-            elements.push({ ref, role, name, value, center });
+            this.refs.set(ref, { backendNodeId: c.backendNodeId, center });
+            elements.push({ ref, role: c.role, name: c.name, value: c.value, center });
         }
         const [url, title] = await Promise.all([
             this.evaluate("location.href"),
@@ -633,11 +701,80 @@ export class Page {
         }
         this.mouse = target;
     }
+    /**
+     * Re-read an element's live centre, instead of trusting the one snapshot()
+     * recorded. Any re-render between snapshot and action — a banner appearing,
+     * a list growing, an accordion opening, lazy images landing — moves the
+     * element, and the recorded centre then points at whatever slid into those
+     * coordinates. Dispatching a real mouse event there clicks the wrong thing
+     * and throws nothing, which is the worst shape a failure can take for an
+     * agent: it looks like it worked.
+     *
+     * Throws if the node has detached or has no layout box (display:none,
+     * removed, collapsed) rather than clicking empty space. Also refreshes the
+     * cached centre so a later action on the same ref starts from truth.
+     */
+    async freshCenter(ref, action) {
+        const target = this.refs.get(ref);
+        if (!target) {
+            throw new Error(`${action}: no element with ref ${ref} — this snapshot has ${this.refs.size} refs. Call snapshot() first.`);
+        }
+        const center = await this.boxCenter(target.backendNodeId);
+        if (!center) {
+            throw new Error(`${action}: ref ${ref} is no longer clickable — the node has detached or has no layout box ` +
+                `(removed, display:none, or zero-sized). Re-run snapshot() after the page changes.`);
+        }
+        target.center = center; // keep the cache honest for the next action on this ref
+        return center;
+    }
+    /**
+     * Hit-test the point we are about to click: is the target actually the
+     * topmost element there? A real mouse event goes to whatever is on top, which
+     * on a live page is routinely a cookie banner, a modal backdrop, a sticky
+     * header, or a loading veil that hasn't torn down. The overlay takes the
+     * click, the target never fires, and nothing throws.
+     *
+     * Deliberately tuned for PRECISION, not recall — this runs on every click, so
+     * a false positive breaks working code, which is the failure that gets a
+     * check deleted. Anything in the same containment chain (a <span> inside the
+     * button, or a wrapper around it) is treated as a hit. Only a genuinely
+     * unrelated topmost element counts as occlusion.
+     */
+    async assertHittable(ref, p, action) {
+        const blocker = await this.callOnRef(ref, `function(x, y){
+        // elementFromPoint stops at a shadow HOST — it will not look inside an
+        // open shadow root. A web component's real button therefore reads as
+        // "covered by <div#host>", which is a false positive on every design
+        // system, Salesforce Lightning, and most modern admin panels. Descend
+        // through shadow roots to find what is genuinely topmost.
+        let top = document.elementFromPoint(x, y);
+        if (!top) return "(nothing — the point is outside the viewport; scroll it into view)";
+        for (let i = 0; i < 10 && top && top.shadowRoot; i++) {
+          const inner = top.shadowRoot.elementFromPoint(x, y);
+          if (!inner || inner === top) break;
+          top = inner;
+        }
+        // Containment, walking across shadow boundaries in BOTH directions,
+        // because contains() does not cross them. Strictly ancestor-or-self —
+        // NOT "share an ancestor", which is true of every pair of nodes at
+        // <body> and would neuter the check entirely.
+        const up = (n) => n.parentNode || n.host || null;
+        for (let n = top; n; n = up(n)) if (n === this) return null;   // top is us, or inside us
+        for (let n = this; n; n = up(n)) if (n === top) return null;   // we are inside top
+        const cls = typeof top.className === "string" && top.className.trim()
+          ? "." + top.className.trim().split(/\\s+/)[0] : "";
+        return "<" + top.tagName.toLowerCase() + (top.id ? "#" + top.id : "") + cls + ">";
+      }`, [p.x, p.y]);
+        if (blocker) {
+            throw new Error(`${action}: ref ${ref} is covered by ${blocker} — the click would go to that element instead. ` +
+                `Dismiss the overlay (cookie banner, modal, sticky header) or scroll, then snapshot() again.`);
+        }
+    }
     /** Click an element by its snapshot ref. */
     async click(ref) {
-        const target = this.refs.get(ref);
-        if (!target)
-            throw new Error(`No element with ref ${ref}. Call snapshot() first.`);
+        const center = await this.freshCenter(ref, "click");
+        await this.assertHittable(ref, center, "click");
+        const target = { center };
         await this.moveTo(target.center);
         await sleep(this.rng.range(30, 90));
         const common = { x: target.center.x, y: target.center.y, button: "left", clickCount: 1 };
@@ -666,12 +803,12 @@ export class Page {
         const upCommon = { x: toX, y: toY, button: "left", clickCount: 1 };
         await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...upCommon });
     }
-    /** Drag an element by snapshot ref to an absolute viewport point. */
+    /** Drag an element by snapshot ref to an absolute viewport point. Re-reads the
+     *  source centre first — a drag from a stale coordinate grabs whatever moved
+     *  into that spot, which on a board UI means dragging the wrong card. */
     async dragRefTo(ref, toX, toY) {
-        const from = this.refs.get(ref);
-        if (!from)
-            throw new Error(`No element with ref ${ref}. Call snapshot() first.`);
-        await this.dragCore(from.center.x, from.center.y, toX, toY);
+        const from = await this.freshCenter(ref, "dragRefTo");
+        await this.dragCore(from.x, from.y, toX, toY);
     }
     /** Drag between two absolute viewport points — for when neither the source
      *  card nor the drop target has a resolvable snapshot ref. */
@@ -746,10 +883,47 @@ export class Page {
         await this.sendKey({ key: "a", code: "KeyA", vk: 65, modifiers: 2 }); // Ctrl+A → select all
         await this.sendKey({ key: "Delete", code: "Delete", vk: 46 }); // delete the selection
     }
-    /** Click a field, clear any existing value, then type into it. */
+    /**
+     * Click a field, clear any existing value, then type into it.
+     *
+     * Guarded at both ends, because every step after the click is a BLIND
+     * keyboard dispatch to whatever currently holds focus. If focus never landed
+     * in an editable field, Ctrl+A selects the whole document, Delete does
+     * nothing useful, the text goes nowhere — and fill() used to return
+     * successfully, leaving the agent believing a form was filled.
+     *
+     *  - before touching the page: refuse a target that cannot accept text
+     *    (disabled, readonly, or simply not a field), so a bad ref can't clobber
+     *    the document selection
+     *  - after the click: confirm the element actually took focus. A cookie
+     *    banner, modal, or sticky header covering the field swallows the click,
+     *    and this is where that shows up as an error instead of as lost text.
+     */
     async fill(ref, text) {
+        const state = await this.callOnRef(ref, `function(){
+        const t = this.tagName;
+        if (this.disabled) return { ok:false, why:"the field is disabled" };
+        if (this.readOnly) return { ok:false, why:"the field is readonly" };
+        const editable = this.isContentEditable || t === "INPUT" || t === "TEXTAREA";
+        if (!editable) return { ok:false, why:"<" + t.toLowerCase() + "> is not an editable field" };
+        return { ok:true, why:"" };
+      }`);
+        if (!state.ok)
+            throw new Error(`fill: ref ${ref} — ${state.why}. Nothing was typed.`);
         await this.click(ref);
         await sleep(this.rng.range(60, 160));
+        // document.activeElement stops at a shadow HOST — inside a web component it
+        // returns the host, never the field. Descend through shadow roots or every
+        // shadow-DOM fill reads as "focus didn't land".
+        const focused = await this.callOnRef(ref, `function(){
+        let a = document.activeElement;
+        for (let i = 0; i < 10 && a && a.shadowRoot && a.shadowRoot.activeElement; i++) a = a.shadowRoot.activeElement;
+        return a === this;
+      }`);
+        if (!focused) {
+            throw new Error(`fill: ref ${ref} — the click did not put focus in the field, so nothing was typed. ` +
+                `Something is probably covering it (cookie banner, modal, sticky header).`);
+        }
         await this.clearField();
         await this.type(text);
     }
@@ -906,11 +1080,24 @@ export class Page {
         const timeout = opts.timeout ?? 10000;
         const visible = opts.visible ?? false;
         const sel = JSON.stringify(selector);
+        // querySelector does not cross shadow boundaries, so waiting for anything
+        // rendered by a web component timed out even though the element was there.
+        // Try the light DOM first (the common case, one call), then walk open
+        // shadow roots only if that missed.
+        const find = `(() => { const q = ${sel};` +
+            ` const light = document.querySelector(q); if (light) return light;` +
+            ` const walk = (root, depth) => { if (depth > 10) return null;` +
+            `   for (const el of root.querySelectorAll("*")) {` +
+            `     if (!el.shadowRoot) continue;` +
+            `     const hit = el.shadowRoot.querySelector(q); if (hit) return hit;` +
+            `     const deeper = walk(el.shadowRoot, depth + 1); if (deeper) return deeper; }` +
+            `   return null; };` +
+            ` return walk(document, 0); })()`;
         const expr = visible
-            ? `(() => { const el = document.querySelector(${sel}); if (!el) return false;` +
+            ? `(() => { const el = ${find}; if (!el) return false;` +
                 ` const r = el.getBoundingClientRect(); const s = getComputedStyle(el);` +
                 ` return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none"; })()`
-            : `document.querySelector(${sel})`;
+            : find;
         try {
             await this.waitFor(expr, { timeout, poll: opts.poll });
         }
@@ -922,6 +1109,136 @@ export class Page {
         }
     }
     /**
+     * Wait for a network response whose URL contains `match` (string) or matches
+     * it (RegExp), and return its status.
+     *
+     * The gap this fills: an agent clicks Save, the button goes into a spinner,
+     * and the only ways to find out whether the write actually succeeded were to
+     * poll the DOM for a toast that may never appear, or to sleep and hope. The
+     * status code is the ground truth and it was not reachable at all.
+     *
+     * Resolves for a matching response even if it arrives before the await —
+     * responses seen since the last goto() are checked first, so the very common
+     * "click, then wait" ordering doesn't race. `status` is reported as-is; a 500
+     * RESOLVES rather than rejecting, because "the request failed" is an answer
+     * the caller wants, not an exception. Only a timeout rejects.
+     */
+    async waitForResponse(match, opts = {}) {
+        const timeout = opts.timeout ?? 15_000;
+        const hits = (u) => (typeof match === "string" ? u.includes(match) : match.test(u));
+        const already = this.recentResponses.find((r) => hits(r.url));
+        if (already)
+            return already;
+        await this.cdp.send("Network.enable", {}, this.sessionId).catch(() => { });
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                off();
+                const seen = this.recentResponses.length;
+                reject(new Error(`waitForResponse: nothing matching ${match} within ${timeout}ms (${seen} response${seen === 1 ? "" : "s"} seen since the last navigation)`));
+            }, timeout);
+            const off = this.cdp.on("Network.responseReceived", (p) => {
+                const url = p?.response?.url ?? "";
+                if (!hits(url))
+                    return;
+                clearTimeout(timer);
+                off();
+                const status = p.response.status;
+                resolve({ url, status, ok: status >= 200 && status < 400 });
+            }, this.sessionId);
+        });
+    }
+    /** Keep a small window of recent responses so waitForResponse() can be called
+     *  AFTER the click that triggered the request without losing the race. Bounded
+     *  so a chatty SPA can't grow it without limit, and cleared on navigation. */
+    trackResponses() {
+        this.cdp.on("Network.responseReceived", (p) => {
+            const url = p?.response?.url ?? "";
+            const status = p?.response?.status ?? 0;
+            this.recentResponses.push({ url, status, ok: status >= 200 && status < 400 });
+            if (this.recentResponses.length > 200)
+                this.recentResponses.shift();
+        }, this.sessionId);
+    }
+    /**
+     * Turn downloads on and send them to `dir`.
+     *
+     * Chrome running under CDP cancels downloads by default, so clicking an
+     * export/report/invoice link did nothing at all and reported nothing — the
+     * agent saw a successful click and no file. This opts the target in and
+     * enables the progress events waitForDownload() listens for.
+     *
+     * `dir` must be an absolute path that already exists; Chrome will not create
+     * it, and a missing directory fails silently at the browser layer.
+     */
+    async enableDownloads(dir) {
+        if (!dir.startsWith("/"))
+            throw new Error(`enableDownloads: dir must be an absolute path, got ${JSON.stringify(dir)}`);
+        this.downloadDir = dir;
+        await this.cdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dir, eventsEnabled: true }, this.sessionId);
+    }
+    /**
+     * Wait for the next download to finish and return where it landed.
+     *
+     * Call it AFTER the click that starts the download — the events are tracked
+     * from enableDownloads() onward, so a download that completes before you
+     * await is still returned rather than lost to a race.
+     *
+     * Rejects on a download Chrome cancelled, and on timeout, instead of hanging
+     * or handing back a path to a file that isn't there.
+     */
+    async waitForDownload(opts = {}) {
+        if (!this.downloadDir)
+            throw new Error("waitForDownload: call enableDownloads(dir) first");
+        const timeout = opts.timeout ?? 30_000;
+        const dir = this.downloadDir;
+        const done = this.finishedDownload;
+        if (done) {
+            this.finishedDownload = null;
+            return done;
+        }
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                cleanup();
+                reject(new Error(`waitForDownload: no download completed within ${timeout}ms`));
+            }, timeout);
+            const cleanup = () => {
+                clearTimeout(timer);
+                this.downloadWaiter = null;
+            };
+            this.downloadWaiter = (err, result) => {
+                cleanup();
+                if (err)
+                    reject(err);
+                else
+                    resolve({ ...result, path: `${dir.replace(/\/$/, "")}/${result.filename}` });
+            };
+        });
+    }
+    /** Wire the Browser download events once, at init. */
+    trackDownloads() {
+        this.cdp.on("Browser.downloadWillBegin", (p) => {
+            this.pendingDownloads.set(p.guid, { filename: p.suggestedFilename ?? p.guid, url: p.url ?? "" });
+        });
+        this.cdp.on("Browser.downloadProgress", (p) => {
+            if (p.state === "inProgress")
+                return;
+            const meta = this.pendingDownloads.get(p.guid) ?? { filename: p.guid, url: "" };
+            this.pendingDownloads.delete(p.guid);
+            const dir = (this.downloadDir ?? "").replace(/\/$/, "");
+            if (p.state === "canceled") {
+                const err = new Error(`download of ${JSON.stringify(meta.filename)} was canceled by the browser`);
+                if (this.downloadWaiter)
+                    this.downloadWaiter(err);
+                return;
+            }
+            const result = { filename: meta.filename, url: meta.url, path: `${dir}/${meta.filename}` };
+            if (this.downloadWaiter)
+                this.downloadWaiter(null, result);
+            else
+                this.finishedDownload = result; // completed before anyone awaited — don't lose it
+        });
+    }
+    /**
      * Attach local files to a file `<input>` — even a hidden one — without an OS
      * file picker. Uses CDP DOM.setFileInputFiles (the same primitive Playwright
      * uses under the hood), which sets `input.files` and fires `change` directly.
@@ -929,14 +1246,38 @@ export class Page {
      * page has several. Paths must be absolute.
      */
     async uploadFile(paths, selector = 'input[type="file"]') {
+        for (const p of paths) {
+            if (!p.startsWith("/"))
+                throw new Error(`uploadFile: paths must be absolute, got ${JSON.stringify(p)}`);
+        }
         const { root } = await this.send("DOM.getDocument", { depth: 0 });
-        const { nodeId } = await this.send("DOM.querySelector", {
-            nodeId: root.nodeId,
-            selector,
+        const { nodeId } = await this.send("DOM.querySelector", { nodeId: root.nodeId, selector });
+        if (nodeId) {
+            await this.send("DOM.setFileInputFiles", { files: paths, nodeId });
+            return;
+        }
+        // DOM.querySelector does not cross shadow boundaries, so a file input owned
+        // by a web component looked absent. Fall back to a shadow-piercing search
+        // and drive it by objectId instead of nodeId.
+        const { result } = await this.send("Runtime.evaluate", {
+            expression: `(() => { const q = ${JSON.stringify(selector)};` +
+                ` const walk = (root, depth) => { if (depth > 10) return null;` +
+                `   const hit = root.querySelector(q); if (hit) return hit;` +
+                `   for (const el of root.querySelectorAll("*")) {` +
+                `     if (el.shadowRoot) { const deep = walk(el.shadowRoot, depth + 1); if (deep) return deep; } }` +
+                `   return null; };` +
+                ` return walk(document, 0); })()`,
         });
-        if (!nodeId)
-            throw new Error(`uploadFile: no element matching ${selector}`);
-        await this.send("DOM.setFileInputFiles", { files: paths, nodeId });
+        const objectId = result?.objectId;
+        if (!objectId) {
+            throw new Error(`uploadFile: no element matching ${selector} (searched the document and any open shadow roots)`);
+        }
+        try {
+            await this.send("DOM.setFileInputFiles", { files: paths, objectId });
+        }
+        finally {
+            this.send("Runtime.releaseObject", { objectId }).catch(() => { });
+        }
     }
     /**
      * Attach files through a control that opens a file picker (e.g. an "Upload
@@ -983,10 +1324,49 @@ export class Page {
             PageUp: { code: "PageUp", vk: 33 },
             PageDown: { code: "PageDown", vk: 34 },
         };
-        const k = KEYS[key];
-        if (!k)
-            throw new Error(`press: unsupported key ${key} (known: ${Object.keys(KEYS).join(", ")})`);
-        await this.sendKey({ key, code: k.code, vk: k.vk, text: k.text });
+        // Modifier combos: "Control+a", "Shift+Tab", "Control+Shift+k", "Meta+c".
+        // Agents need these constantly — select-all before retyping, copy/paste,
+        // Shift+Tab to walk a form backwards, Ctrl+Enter to submit — and every one
+        // of them was previously unreachable through the public API even though
+        // sendKey already understood modifiers.
+        const parts = key.split("+");
+        const bare = parts.pop() ?? "";
+        let modifiers = 0;
+        for (const p of parts) {
+            const m = p.trim().toLowerCase();
+            if (m === "alt")
+                modifiers |= 1;
+            else if (m === "control" || m === "ctrl")
+                modifiers |= 2;
+            else if (m === "meta" || m === "cmd" || m === "command")
+                modifiers |= 4;
+            else if (m === "shift")
+                modifiers |= 8;
+            else
+                throw new Error(`press: unknown modifier ${JSON.stringify(p)} in ${JSON.stringify(key)} (Alt, Control, Meta, Shift)`);
+        }
+        const named = KEYS[bare];
+        if (!named && bare.length !== 1) {
+            // Message shape is part of the contract — tests/key-dispatch.test.ts
+            // matches on it. Keep "unsupported key <k>" unquoted.
+            throw new Error(`press: unsupported key ${bare} — use a single character or one of: ${Object.keys(KEYS).join(", ")}`);
+        }
+        // With a non-Shift modifier held, the chord is a COMMAND, not text: sending
+        // a char event too would type a literal "a" into the field alongside the
+        // Ctrl+A. Shift alone still produces text (an uppercase letter).
+        const isCommand = (modifiers & ~8) !== 0;
+        if (named) {
+            await this.sendKey({ key: bare, code: named.code, vk: named.vk, text: isCommand ? undefined : named.text, modifiers });
+            return;
+        }
+        const info = keyInfo(bare);
+        await this.sendKey({
+            key: info.key,
+            code: info.code,
+            vk: info.vk,
+            text: isCommand ? undefined : info.text,
+            modifiers: modifiers || (info.shift ? 8 : 0),
+        });
     }
     // --- FedCM: drive federated sign-in ("Sign in with Google" one-tap, etc.) ---
     // Chrome renders FedCM account choosers as native browser UI that no synthetic
