@@ -235,6 +235,14 @@ export class Page {
   private activeSessionId: string;
   private frameSessions: Array<{ sessionId: string; url: string; targetId: string }> = [];
   private frameOff?: () => void;
+  // Download state (see enableDownloads / waitForDownload). Chrome under CDP
+  // cancels downloads unless a target opts in, so this stays inert until asked.
+  // `finishedDownload` exists because a small file can complete before the
+  // caller awaits — without it, that download is lost to a race.
+  private downloadDir?: string;
+  private pendingDownloads = new Map<string, { filename: string; url: string }>();
+  private downloadWaiter: ((err: Error | null, result?: { filename: string; url: string; path: string }) => void) | null = null;
+  private finishedDownload: { filename: string; url: string; path: string } | null = null;
   // FedCM interception state (see enableFedCm).
   private fedcmOff?: () => void;
   private fedcmQueue: FedCmDialog[] = [];
@@ -266,6 +274,7 @@ export class Page {
     await this.send("Page.enable");
     await this.send("DOM.enable");
     await this.send("Accessibility.enable");
+    this.trackDownloads(); // listeners only — downloads stay off until enableDownloads()
     // A fingerprint owns the UA + client hints; without one, just scrub any
     // leaked HeadlessChrome token from the real UA.
     if (!opts.fingerprint) await this.normalizeUserAgent();
@@ -1158,6 +1167,86 @@ export class Page {
       }
       throw e;
     }
+  }
+
+  /**
+   * Turn downloads on and send them to `dir`.
+   *
+   * Chrome running under CDP cancels downloads by default, so clicking an
+   * export/report/invoice link did nothing at all and reported nothing — the
+   * agent saw a successful click and no file. This opts the target in and
+   * enables the progress events waitForDownload() listens for.
+   *
+   * `dir` must be an absolute path that already exists; Chrome will not create
+   * it, and a missing directory fails silently at the browser layer.
+   */
+  async enableDownloads(dir: string) {
+    if (!dir.startsWith("/")) throw new Error(`enableDownloads: dir must be an absolute path, got ${JSON.stringify(dir)}`);
+    this.downloadDir = dir;
+    await this.cdp.send(
+      "Browser.setDownloadBehavior",
+      { behavior: "allow", downloadPath: dir, eventsEnabled: true },
+      this.sessionId,
+    );
+  }
+
+  /**
+   * Wait for the next download to finish and return where it landed.
+   *
+   * Call it AFTER the click that starts the download — the events are tracked
+   * from enableDownloads() onward, so a download that completes before you
+   * await is still returned rather than lost to a race.
+   *
+   * Rejects on a download Chrome cancelled, and on timeout, instead of hanging
+   * or handing back a path to a file that isn't there.
+   */
+  async waitForDownload(opts: { timeout?: number } = {}): Promise<{ filename: string; path: string; url: string }> {
+    if (!this.downloadDir) throw new Error("waitForDownload: call enableDownloads(dir) first");
+    const timeout = opts.timeout ?? 30_000;
+    const dir = this.downloadDir;
+
+    const done = this.finishedDownload;
+    if (done) {
+      this.finishedDownload = null;
+      return done;
+    }
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`waitForDownload: no download completed within ${timeout}ms`));
+      }, timeout);
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.downloadWaiter = null;
+      };
+      this.downloadWaiter = (err, result) => {
+        cleanup();
+        if (err) reject(err);
+        else resolve({ ...result!, path: `${dir.replace(/\/$/, "")}/${result!.filename}` });
+      };
+    });
+  }
+
+  /** Wire the Browser download events once, at init. */
+  private trackDownloads() {
+    this.cdp.on("Browser.downloadWillBegin", (p: any) => {
+      this.pendingDownloads.set(p.guid, { filename: p.suggestedFilename ?? p.guid, url: p.url ?? "" });
+    });
+    this.cdp.on("Browser.downloadProgress", (p: any) => {
+      if (p.state === "inProgress") return;
+      const meta = this.pendingDownloads.get(p.guid) ?? { filename: p.guid, url: "" };
+      this.pendingDownloads.delete(p.guid);
+      const dir = (this.downloadDir ?? "").replace(/\/$/, "");
+      if (p.state === "canceled") {
+        const err = new Error(`download of ${JSON.stringify(meta.filename)} was canceled by the browser`);
+        if (this.downloadWaiter) this.downloadWaiter(err);
+        return;
+      }
+      const result = { filename: meta.filename, url: meta.url, path: `${dir}/${meta.filename}` };
+      if (this.downloadWaiter) this.downloadWaiter(null, result);
+      else this.finishedDownload = result; // completed before anyone awaited — don't lose it
+    });
   }
 
   /**
