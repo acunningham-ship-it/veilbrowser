@@ -853,10 +853,47 @@ export class Page {
     await this.sendKey({ key: "Delete", code: "Delete", vk: 46 });        // delete the selection
   }
 
-  /** Click a field, clear any existing value, then type into it. */
+  /**
+   * Click a field, clear any existing value, then type into it.
+   *
+   * Guarded at both ends, because every step after the click is a BLIND
+   * keyboard dispatch to whatever currently holds focus. If focus never landed
+   * in an editable field, Ctrl+A selects the whole document, Delete does
+   * nothing useful, the text goes nowhere — and fill() used to return
+   * successfully, leaving the agent believing a form was filled.
+   *
+   *  - before touching the page: refuse a target that cannot accept text
+   *    (disabled, readonly, or simply not a field), so a bad ref can't clobber
+   *    the document selection
+   *  - after the click: confirm the element actually took focus. A cookie
+   *    banner, modal, or sticky header covering the field swallows the click,
+   *    and this is where that shows up as an error instead of as lost text.
+   */
   async fill(ref: number, text: string) {
+    const state = await this.callOnRef<{ ok: boolean; why: string }>(
+      ref,
+      `function(){
+        const t = this.tagName;
+        if (this.disabled) return { ok:false, why:"the field is disabled" };
+        if (this.readOnly) return { ok:false, why:"the field is readonly" };
+        const editable = this.isContentEditable || t === "INPUT" || t === "TEXTAREA";
+        if (!editable) return { ok:false, why:"<" + t.toLowerCase() + "> is not an editable field" };
+        return { ok:true, why:"" };
+      }`,
+    );
+    if (!state.ok) throw new Error(`fill: ref ${ref} — ${state.why}. Nothing was typed.`);
+
     await this.click(ref);
     await sleep(this.rng.range(60, 160));
+
+    const focused = await this.callOnRef<boolean>(ref, `function(){ return document.activeElement === this; }`);
+    if (!focused) {
+      throw new Error(
+        `fill: ref ${ref} — the click did not put focus in the field, so nothing was typed. ` +
+          `Something is probably covering it (cookie banner, modal, sticky header).`,
+      );
+    }
+
     await this.clearField();
     await this.type(text);
   }
