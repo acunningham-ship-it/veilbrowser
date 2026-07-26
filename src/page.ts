@@ -239,6 +239,9 @@ export class Page {
   // cancels downloads unless a target opts in, so this stays inert until asked.
   // `finishedDownload` exists because a small file can complete before the
   // caller awaits — without it, that download is lost to a race.
+  // Recent Network.responseReceived, so waitForResponse() can be called AFTER
+  // the click that caused the request without losing the race. Cleared on nav.
+  private recentResponses: Array<{ url: string; status: number; ok: boolean }> = [];
   private downloadDir?: string;
   private pendingDownloads = new Map<string, { filename: string; url: string }>();
   private downloadWaiter: ((err: Error | null, result?: { filename: string; url: string; path: string }) => void) | null = null;
@@ -275,6 +278,7 @@ export class Page {
     await this.send("DOM.enable");
     await this.send("Accessibility.enable");
     this.trackDownloads(); // listeners only — downloads stay off until enableDownloads()
+    this.trackResponses();
     // A fingerprint owns the UA + client hints; without one, just scrub any
     // leaked HeadlessChrome token from the real UA.
     if (!opts.fingerprint) await this.normalizeUserAgent();
@@ -524,6 +528,7 @@ export class Page {
     opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {},
   ): Promise<{ url: string; status?: number; ok?: boolean }> {
     this.refs.clear();
+    this.recentResponses = [];
     this.activeSessionId = this.sessionId;
     const timeout = opts.timeout ?? 30000;
     // Capture the main document's HTTP status so callers can detect 4xx/5xx: match
@@ -1206,6 +1211,73 @@ export class Page {
       }
       throw e;
     }
+  }
+
+  /**
+   * Wait for a network response whose URL contains `match` (string) or matches
+   * it (RegExp), and return its status.
+   *
+   * The gap this fills: an agent clicks Save, the button goes into a spinner,
+   * and the only ways to find out whether the write actually succeeded were to
+   * poll the DOM for a toast that may never appear, or to sleep and hope. The
+   * status code is the ground truth and it was not reachable at all.
+   *
+   * Resolves for a matching response even if it arrives before the await —
+   * responses seen since the last goto() are checked first, so the very common
+   * "click, then wait" ordering doesn't race. `status` is reported as-is; a 500
+   * RESOLVES rather than rejecting, because "the request failed" is an answer
+   * the caller wants, not an exception. Only a timeout rejects.
+   */
+  async waitForResponse(
+    match: string | RegExp,
+    opts: { timeout?: number } = {},
+  ): Promise<{ url: string; status: number; ok: boolean }> {
+    const timeout = opts.timeout ?? 15_000;
+    const hits = (u: string) => (typeof match === "string" ? u.includes(match) : match.test(u));
+
+    const already = this.recentResponses.find((r) => hits(r.url));
+    if (already) return already;
+
+    await this.cdp.send("Network.enable", {}, this.sessionId).catch(() => {});
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        off();
+        const seen = this.recentResponses.length;
+        reject(
+          new Error(
+            `waitForResponse: nothing matching ${match} within ${timeout}ms (${seen} response${seen === 1 ? "" : "s"} seen since the last navigation)`,
+          ),
+        );
+      }, timeout);
+      const off = this.cdp.on(
+        "Network.responseReceived",
+        (p: any) => {
+          const url: string = p?.response?.url ?? "";
+          if (!hits(url)) return;
+          clearTimeout(timer);
+          off();
+          const status: number = p.response.status;
+          resolve({ url, status, ok: status >= 200 && status < 400 });
+        },
+        this.sessionId,
+      );
+    });
+  }
+
+  /** Keep a small window of recent responses so waitForResponse() can be called
+   *  AFTER the click that triggered the request without losing the race. Bounded
+   *  so a chatty SPA can't grow it without limit, and cleared on navigation. */
+  private trackResponses() {
+    this.cdp.on(
+      "Network.responseReceived",
+      (p: any) => {
+        const url: string = p?.response?.url ?? "";
+        const status: number = p?.response?.status ?? 0;
+        this.recentResponses.push({ url, status, ok: status >= 200 && status < 400 });
+        if (this.recentResponses.length > 200) this.recentResponses.shift();
+      },
+      this.sessionId,
+    );
   }
 
   /**
