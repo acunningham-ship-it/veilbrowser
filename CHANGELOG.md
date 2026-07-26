@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.1 — 2026-07-26
+
+### Fixed
+- **`veilbrowser` (Python) no longer needs `websockets` just to build a stealth
+  script.** It was imported at module scope, so `from veilbrowser.fingerprint import
+  ...` pulled in the whole dependency — which failed the 1.3.0 release in CI with
+  `ModuleNotFoundError` on a box that had no pip install, for a reason unrelated to
+  anything the tests were checking. The import is now inside `CDP.connect()`, where it
+  is actually needed, and raises a message naming the fix instead of a bare
+  `ModuleNotFoundError`. `tests/python-parity.test.ts` now blocks the import
+  explicitly, so this holds whether or not the machine running the tests happens to
+  have `websockets` installed. (1.3.0 was tagged but never published — npm went
+  straight from 1.2.0 to 1.3.1.)
+
 ## 1.3.0 — 2026-07-26
 
 ### Added

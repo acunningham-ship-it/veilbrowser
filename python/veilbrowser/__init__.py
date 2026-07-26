@@ -29,7 +29,7 @@ from .fingerprint import Fingerprint, FingerprintScreen
 from .launcher import find_chrome, launch_chrome
 from .page import Page
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 __all__ = [
     "Browser",
     "Page",

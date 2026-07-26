@@ -6,8 +6,6 @@ import asyncio
 import json
 from typing import Any, Callable
 
-import websockets
-
 
 class CDPError(RuntimeError):
     """A CDP command came back with an error, or the socket died mid-command."""
@@ -32,6 +30,19 @@ class CDP:
 
     @classmethod
     async def connect(cls, ws_url: str) -> "CDP":
+        # Imported HERE, not at module scope, so the rest of the package works without
+        # it. `veilbrowser.fingerprint` only builds strings — requiring a WebSocket
+        # library to compute a stealth script made the TS/Python byte-parity test
+        # depend on a pip install, and it failed CI for a reason unrelated to what it
+        # tests. Anyone who actually opens a browser still needs the dependency, and
+        # gets told so plainly rather than via a bare ModuleNotFoundError.
+        try:
+            import websockets
+        except ImportError as e:  # pragma: no cover
+            raise CDPError(
+                "veilbrowser needs the `websockets` package to drive a browser: "
+                "pip install websockets"
+            ) from e
         # max_size=None is REQUIRED, not tuning: websockets defaults to a 1 MiB
         # frame cap, and a single Page.captureScreenshot of a normal viewport is
         # base64 well past that. With the default the connection dies on the

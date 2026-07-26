@@ -71,6 +71,30 @@ test("committed python assets match what the generator emits now", () => {
   }
 });
 
+test("the stealth layer imports WITHOUT the websockets dependency", () => {
+  // This is a regression guard for a real CI failure, not a hypothetical: websockets
+  // was imported at module scope, so `from veilbrowser.fingerprint import ...` pulled
+  // it in, and the four parity tests below failed the 1.3.0 release with
+  // ModuleNotFoundError on a box that simply had no pip install — a failure with
+  // nothing to do with what they test. Blocking the import explicitly means this holds
+  // whether or not the machine running the test happens to have websockets.
+  const out = py(
+    "import sys\n" +
+      "class Block:\n" +
+      "    def find_spec(self, name, path=None, target=None):\n" +
+      "        if name == 'websockets' or name.startswith('websockets.'):\n" +
+      "            raise ImportError('blocked by test')\n" +
+      "        return None\n" +
+      "sys.meta_path.insert(0, Block())\n" +
+      "from veilbrowser.fingerprint import Fingerprint, build_fingerprint_stealth, chrome_flags\n" +
+      "from veilbrowser.page import key_info\n" +
+      "assert build_fingerprint_stealth(Fingerprint.preset('windows-chrome'))\n" +
+      "assert chrome_flags() and key_info('a')\n" +
+      "print('ok')",
+  );
+  expect(out.trim()).toBe("ok");
+});
+
 test("python emits byte-identical fingerprint stealth for every preset", () => {
   const out = py(
     "import hashlib, json\n" +
