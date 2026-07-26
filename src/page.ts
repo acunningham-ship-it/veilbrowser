@@ -197,6 +197,27 @@ export function keyInfo(ch: string): { key: string; code: string; vk: number; te
   return { key: ch, code: "", vk: 0, text: ch, shift: false };
 }
 
+
+/** Run `fn` over `items` with at most `limit` in flight, preserving input order.
+ *  Bounded on purpose: firing 500 CDP commands at once is a good way to make
+ *  one slow page look like a hung browser. */
+async function mapConcurrent<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/** How many DOM.getBoxModel calls snapshot() keeps in flight. */
+const BOX_BATCH = 24;
+
 export class Page {
   private rng = new Rng();
   private mouse: Point = { x: 100, y: 100 };
@@ -642,6 +663,13 @@ export class Page {
     const elements: Element[] = [];
     let ref = 0;
 
+    // Two passes on purpose. Pass 1 filters cheaply in memory; pass 2 asks
+    // Chrome for the layout boxes ALL AT ONCE. The old shape awaited one
+    // DOM.getBoxModel per candidate inside the loop, so a 150-element page paid
+    // 150 sequential round-trips and a real app page (500+) paid 500. The CDP
+    // client keys pending replies by message id, so concurrent commands are
+    // safe; batching keeps one slow reply from blocking the rest.
+    const candidates: Array<{ backendNodeId: number; role: string; name: string; value?: string }> = [];
     for (const n of nodes) {
       if (n.ignored) continue;
       const role: string = n.role?.value ?? "";
@@ -650,14 +678,20 @@ export class Page {
       if (!name && role !== "textbox" && role !== "searchbox" && role !== "textarea") continue;
       const backendNodeId = n.backendDOMNodeId;
       if (!backendNodeId) continue;
+      candidates.push({ backendNodeId, role, name, value: n.value?.value });
+    }
 
-      const center = await this.boxCenter(backendNodeId);
+    const centers = await mapConcurrent(candidates, BOX_BATCH, (c) => this.boxCenter(c.backendNodeId));
+
+    // Ref numbering stays in accessibility-tree order — an agent re-reading a
+    // snapshot must see stable, ascending refs regardless of reply ordering.
+    for (let i = 0; i < candidates.length; i++) {
+      const center = centers[i];
       if (!center) continue; // not visible / no layout box
-
+      const c = candidates[i];
       ref++;
-      const value: string | undefined = n.value?.value;
-      this.refs.set(ref, { backendNodeId, center });
-      elements.push({ ref, role, name, value, center });
+      this.refs.set(ref, { backendNodeId: c.backendNodeId, center });
+      elements.push({ ref, role: c.role, name: c.name, value: c.value, center });
     }
 
     const [url, title] = await Promise.all([
