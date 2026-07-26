@@ -1179,11 +1179,25 @@ export class Page {
     const timeout = opts.timeout ?? 10000;
     const visible = opts.visible ?? false;
     const sel = JSON.stringify(selector);
+    // querySelector does not cross shadow boundaries, so waiting for anything
+    // rendered by a web component timed out even though the element was there.
+    // Try the light DOM first (the common case, one call), then walk open
+    // shadow roots only if that missed.
+    const find =
+      `(() => { const q = ${sel};` +
+      ` const light = document.querySelector(q); if (light) return light;` +
+      ` const walk = (root, depth) => { if (depth > 10) return null;` +
+      `   for (const el of root.querySelectorAll("*")) {` +
+      `     if (!el.shadowRoot) continue;` +
+      `     const hit = el.shadowRoot.querySelector(q); if (hit) return hit;` +
+      `     const deeper = walk(el.shadowRoot, depth + 1); if (deeper) return deeper; }` +
+      `   return null; };` +
+      ` return walk(document, 0); })()`;
     const expr = visible
-      ? `(() => { const el = document.querySelector(${sel}); if (!el) return false;` +
+      ? `(() => { const el = ${find}; if (!el) return false;` +
         ` const r = el.getBoundingClientRect(); const s = getComputedStyle(el);` +
         ` return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none"; })()`
-      : `document.querySelector(${sel})`;
+      : find;
     try {
       await this.waitFor(expr, { timeout, poll: opts.poll });
     } catch (e: any) {
