@@ -48,8 +48,33 @@ lives and how agents use it**:
   and **blocks visited sites from port-scanning your localhost/LAN** (on by default). Neither
   `nodriver`, Camoufox, nor Playwright-stealth does either.
 
-If you're in Python and just want raw stealth, use `nodriver` or Camoufox — they're great.
-Veil is for **TypeScript agents and MCP hosts.**
+### Two more that get raised, and where they actually land
+
+Both of these came up when Veil was posted publicly, so they belong here rather than in a
+comment thread.
+
+- **[Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright)** (Python + Node) — a
+  patched, drop-in Playwright replacement. It fixes Playwright's launch-flag and JS-surface
+  leaks: adds `--disable-blink-features=AutomationControlled`, drops `--enable-automation`,
+  corrects `navigator.webdriver` and the `HeadlessChrome` UA. Chromium only.
+  **If you already have Playwright code and want it less detectable, this is the lowest-friction
+  option and you should probably use it** — it's a dependency swap, not a rewrite.
+  Where it differs: it is still Playwright underneath, so it **launches its own browser** and
+  therefore hits the same `user-data-dir` lock — it cannot attach to a profile you're already
+  signed into. Attaching isn't a stealth patch, it's a different architecture, and it's the
+  thing that actually gets you past session-scored sites.
+- **[Claude for Chrome](https://www.anthropic.com/)** — an extension running inside your own
+  browser. It shares Veil's core insight (use the real browser, inherit the real session) and,
+  being a genuine extension rather than automation, it isn't fighting bot checks at all.
+  **If you want a human-in-the-loop assistant in your browser, it's a better fit than a
+  library.** Where it differs: it isn't programmable. You can't call it from a script, wire it
+  into CI, run it headless on a server, expose it as MCP tools to your own agent, or control the
+  fingerprint. Veil is a library your code drives; that's a different job, not a better one.
+
+If you're in Python and just want raw stealth, use `nodriver` or Camoufox — they're great. If
+you have Playwright code already, try Patchright first. If you want an assistant in your own
+browser, use Claude for Chrome. **Veil is for TypeScript agents and MCP hosts that need to
+drive a browser programmatically — and, uniquely among these, one you're already signed into.**
 
 ## Quick start
 
