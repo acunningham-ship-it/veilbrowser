@@ -222,6 +222,20 @@ export class Page {
   private rng = new Rng();
   private mouse: Point = { x: 100, y: 100 };
   private refs = new Map<number, { backendNodeId: number; center: Point }>();
+  /**
+   * Stable ref identity. A backendNodeId keeps the SAME number for the lifetime of
+   * the document, so a number is NEVER reused for a different element.
+   *
+   * Refs used to be assigned 1..N per snapshot, which made them positional: removing
+   * an element earlier in the tree shifted every later ref down one, and an agent
+   * reusing a remembered number then actuated a DIFFERENT element and got success
+   * back. Measured 2026-07-27 — and insertion is not predictable either
+   * (`body.prepend` shifts, `appendChild` into a div above does not), so "did the DOM
+   * change in a way that renumbers?" is not a question a caller can answer.
+   * Memoising identity makes a stale ref either still correct, or loudly absent.
+   */
+  private refByNode = new Map<number, number>();
+  private nextRef = 0;
   private closed = false;
   // Cross-origin iframe support: CDP site-isolates a cross-origin child frame into
   // its own renderer target ("OOPIF"), invisible to Accessibility/Runtime/Input
@@ -336,7 +350,7 @@ export class Page {
     const [gone] = this.frameSessions.splice(i, 1);
     if (gone && this.activeSessionId === gone.sessionId) {
       this.activeSessionId = this.sessionId;
-      this.refs.clear();
+      this.resetRefs();
     }
   }
 
@@ -350,7 +364,7 @@ export class Page {
    *  (index from frames()), or back at the main page with null/undefined. Clears
    *  refs — a snapshot ref is only ever valid for the frame it was taken in. */
   useFrame(index?: number | null) {
-    this.refs.clear();
+    this.resetRefs();
     if (index == null) {
       this.activeSessionId = this.sessionId;
       return;
@@ -527,7 +541,7 @@ export class Page {
     url: string,
     opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {},
   ): Promise<{ url: string; status?: number; ok?: boolean }> {
-    this.refs.clear();
+    this.resetRefs();
     this.recentResponses = [];
     this.activeSessionId = this.sessionId;
     const timeout = opts.timeout ?? 30000;
@@ -593,7 +607,7 @@ export class Page {
 
   /** Reload the current page (Page.reload), waiting per `waitUntil`. */
   async reload(opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {}) {
-    this.refs.clear();
+    this.resetRefs();
     this.activeSessionId = this.sessionId;
     const waiter = this.waitForLoad(opts.waitUntil ?? "load", opts.timeout ?? 30000);
     await this.cdp.send("Page.reload", {}, this.sessionId);
@@ -620,7 +634,7 @@ export class Page {
     );
     const target = entries?.[currentIndex + delta];
     if (!target) throw new Error(delta < 0 ? "back(): no earlier history entry" : "forward(): no later history entry");
-    this.refs.clear();
+    this.resetRefs();
     this.activeSessionId = this.sessionId;
     const waiter = this.waitForLoad(opts.waitUntil ?? "load", opts.timeout ?? 30000);
     await this.cdp.send("Page.navigateToHistoryEntry", { entryId: target.id }, this.sessionId);
@@ -711,12 +725,22 @@ export class Page {
     return this.evaluate<string>("location.href");
   }
 
+  /** Drop every ref AND its identity map. Navigation and frame switches invalidate
+   *  backendNodeIds wholesale, so keeping the old numbers would be meaningless. */
+  private resetRefs() {
+    this.refs.clear();
+    this.refByNode.clear();
+    this.nextRef = 0;
+  }
+
   /** Build the numbered element index from the accessibility tree. */
   async snapshot(): Promise<Snapshot> {
     const { nodes } = await this.send("Accessibility.getFullAXTree");
+    // Clear the live map (a node that is gone must stop resolving, so acting on its
+    // ref errors loudly) but KEEP refByNode, which is what makes a number mean the
+    // same element on the next snapshot.
     this.refs.clear();
     const elements: Element[] = [];
-    let ref = 0;
 
     // Two passes on purpose. Pass 1 filters cheaply in memory; pass 2 asks
     // Chrome for the layout boxes ALL AT ONCE. The old shape awaited one
@@ -738,13 +762,21 @@ export class Page {
 
     const centers = await mapConcurrent(candidates, BOX_BATCH, (c) => this.boxCenter(c.backendNodeId));
 
-    // Ref numbering stays in accessibility-tree order — an agent re-reading a
-    // snapshot must see stable, ascending refs regardless of reply ordering.
+    // Elements are LISTED in accessibility-tree order, but a ref is an IDENTITY, not
+    // a position: a node that has been seen before keeps the number it was given.
+    // Numbers are therefore ascending on first sight and may contain gaps afterwards
+    // (an element was removed) or appear out of order (a new element was inserted
+    // above older ones). That is the point — the alternative is renumbering, and a
+    // renumbered ref actuates the wrong element without failing.
     for (let i = 0; i < candidates.length; i++) {
       const center = centers[i];
       if (!center) continue; // not visible / no layout box
       const c = candidates[i];
-      ref++;
+      let ref = this.refByNode.get(c.backendNodeId);
+      if (ref === undefined) {
+        ref = ++this.nextRef;
+        this.refByNode.set(c.backendNodeId, ref);
+      }
       this.refs.set(ref, { backendNodeId: c.backendNodeId, center });
       elements.push({ ref, role: c.role, name: c.name, value: c.value, center });
     }
@@ -1775,7 +1807,7 @@ export class Page {
   async close() {
     if (this.closed) return;
     this.closed = true;
-    this.refs.clear();
+    this.resetRefs();
     this.frameOff?.();
     this.fetchOff?.();
     this.frameSessions = [];

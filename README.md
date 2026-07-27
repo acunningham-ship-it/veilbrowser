@@ -270,6 +270,12 @@ The selling point isn't only stealth — it's that agents drive it *well*:
 - **`snapshot()`** returns the page as a flat numbered index from the accessibility
   tree (the semantic layer screen readers use). The #1 cause of agent breakage —
   guessed CSS/XPath selectors — is gone. The agent acts on a stable `ref`.
+  **A `ref` is an identity, not a position:** an element keeps its number for as long
+  as the document lives, so a number is never reused for a different element. Refs are
+  `1..N` on the first snapshot and may then develop gaps (something was removed) or
+  run out of order (something was inserted above older elements). That is deliberate —
+  renumbering per snapshot means a remembered `ref` can actuate the *wrong* element and
+  still report success. Here a stale ref is either still correct, or a clear error.
 - **`screenshot()`** returns a PNG buffer, ready for vision grounding — the viewport,
   the whole `{fullPage}`, a single element `{ref}`, or an explicit `{clip}` rectangle.
 - **`click` / `fill` / `type`** drive real CDP input with human dynamics.
@@ -434,7 +440,8 @@ DISPLAY=:98 python3 python/tests/test_smoke.py   # 21 checks, Python front end v
 
 Unit tests cover:
 - **PRNG (`human.test.ts`)**: xorshift32 determinism, range/int bounds, keystroke cadence, mouse timing
-- **Snapshot refs (`snapshot.test.ts`)**: ref numbering (1-based, sequential, no gaps), AX-tree filtering
+- **Snapshot refs (`snapshot.test.ts`)**: ref numbering (1-based, sequential on a fresh document), AX-tree filtering
+- **Ref identity across snapshots (`ref-cross-snapshot.test.ts`)**: a survivor keeps its ref when an element above it is removed or inserted; a removed element's ref fails loudly; a stale ref never actuates a *different* element; numbering resets on navigation
 - **CDP framing (`cdp-messages.test.ts`)**: JSON-RPC structure, sessionId routing, command/response correlation
 - **Private-network classifier (`private-host.test.ts`)**: loopback/RFC1918 vs public host detection (the block's decision)
 - **Lifecycle (`lifecycle.test.ts`, local only)**: launch/close, process-group reaping, profile-lock refusal
