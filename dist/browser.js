@@ -9,15 +9,17 @@ export class Browser {
     cdp;
     launch;
     blockPrivate;
+    allowOrigins;
     fingerprint;
     attached;
-    constructor(cdp, launch, blockPrivate, fingerprint, 
+    constructor(cdp, launch, blockPrivate, allowOrigins, fingerprint, 
     /** True when we ATTACHED to an existing browser rather than launching it.
      *  Gates close(): we must never kill a process we did not start. */
     attached = false) {
         this.cdp = cdp;
         this.launch = launch;
         this.blockPrivate = blockPrivate;
+        this.allowOrigins = allowOrigins;
         this.fingerprint = fingerprint;
         this.attached = attached;
     }
@@ -28,7 +30,7 @@ export class Browser {
         // localhost/LAN. Opt out with { blockPrivateNetwork: false }.
         // A `fingerprint`, if given, is applied to every page at creation so a
         // coherent identity is in place before the first navigation.
-        return new Browser(cdp, launch, opts.blockPrivateNetwork ?? true, opts.fingerprint);
+        return new Browser(cdp, launch, opts.blockPrivateNetwork ?? true, opts.allowOrigins, opts.fingerprint);
     }
     /**
      * Attach to an ALREADY-RUNNING Chrome instead of launching one.
@@ -76,7 +78,7 @@ export class Browser {
             maskWebgl: false,
             kill: () => { },
         };
-        return new Browser(cdp, attached, opts.blockPrivateNetwork ?? true, opts.fingerprint, true);
+        return new Browser(cdp, attached, opts.blockPrivateNetwork ?? true, opts.allowOrigins, opts.fingerprint, true);
     }
     /**
      * The tabs that already exist, as initialised Pages.
@@ -115,6 +117,7 @@ export class Browser {
         await page.init({
             maskWebgl: this.launch.maskWebgl,
             blockPrivateNetwork: this.blockPrivate,
+            allowOrigins: this.allowOrigins,
             fingerprint: this.fingerprint,
         });
         return page;

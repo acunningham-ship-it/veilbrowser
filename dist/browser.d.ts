@@ -9,6 +9,7 @@ export declare class Browser {
     private cdp;
     private launch;
     private blockPrivate;
+    private allowOrigins;
     private fingerprint?;
     /** True when we ATTACHED to an existing browser rather than launching it.
      *  Gates close(): we must never kill a process we did not start. */
@@ -41,6 +42,7 @@ export declare class Browser {
      */
     static connect(endpoint: string, opts?: {
         blockPrivateNetwork?: boolean;
+        allowOrigins?: string[];
         fingerprint?: Fingerprint;
     }): Promise<Browser>;
     /**

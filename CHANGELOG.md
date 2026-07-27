@@ -1,5 +1,50 @@
 # Changelog
 
+## 1.5.0 — 2026-07-27
+
+### Added
+- **Origin allowlist — confine an agent that is attached to a signed-in profile.**
+
+  ```ts
+  Browser.connect("127.0.0.1:9222", { allowOrigins: ["github.com"] })
+  await page.restrictOrigins([...]); await page.unrestrictOrigins();
+  ```
+
+  `connect()` is the only way to drive a logged-in profile, and it hands the agent **every
+  session in that cookie jar**. An agent told "check my order" can navigate to your mailbox,
+  because it is the same browser. 1.3.x documented that boundary; this is the mechanism.
+
+  Any **document** navigation — top-level or sub-frame — to a host outside the list fails
+  `AccessDenied`. Entries match host plus subdomains **on a dot boundary**, so `github.com`
+  covers `api.github.com` and rejects `notgithub.com` and `github.com.evil.tld`. Suffix
+  matching without the boundary check is the classic hole in this kind of guard, so it has
+  dedicated tests.
+
+  **A deliberate asymmetry from the neighbouring guard:** the private-network block *exempts*
+  the agent's own top-level navigation. This one has **no main-frame exemption**, because here
+  the top-level navigation IS the threat. Copying the adjacent guard's shape would have
+  produced something that blocks nothing.
+
+  Implemented as guard #0 inside the existing `Fetch.requestPaused` handler that already
+  reconciles the private-network block and resource blocking, with a Document-only intercept
+  pattern so subresources are never paused — no per-image round trip.
+
+  **What it does NOT do, in the README as well, because an over-trusted security control is
+  worse than none:** subresources are not gated (gating them breaks every real site, and a
+  guard that breaks sites gets switched off); everything on an allowed origin is fully
+  reachable as that user; and a beacon-style POST to an unlisted origin is not blocked,
+  because it is not a document.
+
+  Raised by **u/zhonglin** on r/AI_Agents, who pointed out that reusing an authenticated
+  browser moves the profile inside the agent's trust boundary.
+
+### Verified
+220/220 tests. Sensitivity checked by disabling **only** the guard block while leaving
+`isOriginAllowed` exported — a compile error would have gone red for the wrong reason — giving
+10 pass / 1 fail, the failure being exactly the blocked-navigation case. The matcher was then
+re-tested independently against 14 adversarial hosts including both boundary attacks.
+
+
 ## 1.4.0 — 2026-07-27
 
 ### Fixed

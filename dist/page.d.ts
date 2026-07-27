@@ -48,6 +48,25 @@ export interface FedCmDialog {
  * also leaks your LAN to every site you visit. Exotic IP encodings (decimal,
  * hex) are a known gap; real-world scanners use the canonical forms below.
  */
+/**
+ * Is this URL inside the agent's permitted origins?
+ *
+ * The problem (raised by u/zhonglin on r/AI_Agents): `Browser.connect()` to a
+ * signed-in Chrome puts EVERY logged-in session inside the agent's reach. An agent
+ * told "check my Amazon order" can navigate to mail.google.com and read the mailbox,
+ * because it is the same browser with the same cookie jar. Documentation asks the
+ * operator to be careful; this is the mechanism that doesn't.
+ *
+ * An entry matches its own host and its subdomains — `"github.com"` allows
+ * `github.com` and `api.github.com`, but NOT `notgithub.com` (suffix matching without
+ * the dot boundary is the classic hole). A scheme, port or path in an entry is
+ * ignored: this gates WHERE the agent may go, not how it gets there.
+ *
+ * Non-http(s) URLs are always allowed — `about:blank` is how a tab starts and
+ * `data:`/`blob:` carry no ambient credentials, so gating them buys nothing and
+ * breaks newPage().
+ */
+export declare function isOriginAllowed(url: string, allow: string[]): boolean;
 export declare function isPrivateHost(url: string): boolean;
 /**
  * Resolve one character to a well-formed keystroke: the DOM `key`, the physical
@@ -101,6 +120,7 @@ export declare class Page {
     private fedcmWaiters;
     private lastFedcmDialogId?;
     private blockPrivateOn;
+    private allowOrigins;
     private fingerprint?;
     private blockedResourceTypes;
     private blockedUrlSubstrings;
@@ -112,6 +132,7 @@ export declare class Page {
     init(opts?: {
         maskWebgl?: boolean;
         blockPrivateNetwork?: boolean;
+        allowOrigins?: string[];
         fingerprint?: Fingerprint;
     }): Promise<void>;
     /** Drop a dead child-frame session (its iframe unmounted or navigated). If it
@@ -566,6 +587,25 @@ export declare class Page {
      * (page.goto("http://localhost:3000")), and a localhost page loading its own
      * localhost resources — only a PUBLIC page reaching a private host is blocked.
      */
+    /**
+     * Confine this page to a set of origins: any DOCUMENT navigation (top-level or
+     * sub-frame) to a host outside the list fails with AccessDenied.
+     *
+     * This is the mechanism behind the `Browser.connect()` warning. Attaching to a
+     * signed-in Chrome hands the agent every session in that profile; an allowlist is
+     * how you say "this run may touch github.com and nothing else" instead of trusting
+     * it to stay on task.
+     *
+     * Scope, stated so it is not over-trusted:
+     *  - gates NAVIGATION, not subresources. A real page loads images/fonts/scripts from
+     *    other origins; gating those breaks every site, and a guard that breaks sites
+     *    gets turned off. Cross-origin reads are already stopped by the same-origin policy.
+     *  - anything ON an allowed origin is fully reachable, as the signed-in user.
+     *  - a beacon-style POST to a non-allowed origin is NOT blocked (it is not a Document).
+     */
+    restrictOrigins(origins: string[]): Promise<void>;
+    /** Lift the origin allowlist. */
+    unrestrictOrigins(): Promise<void>;
     blockPrivateNetwork(): Promise<void>;
     /** Lift the private-network block (re-allows localhost/LAN requests). Leaves any
      *  resource blocking in place. */
