@@ -53,6 +53,19 @@ export interface LaunchOptions {
    */
   blockPrivateNetwork?: boolean;
   /**
+   * Confine the agent to these origins: any DOCUMENT navigation (top-level or
+   * sub-frame) to a host outside the list fails with AccessDenied. Empty/omitted =
+   * unrestricted. An entry matches its own host and subdomains — `"github.com"`
+   * covers `api.github.com` but not `notgithub.com`.
+   *
+   * This is the mechanism behind the `Browser.connect()` warning: attaching to a
+   * signed-in Chrome hands the agent every session in that profile, and an allowlist
+   * is how a run says "github.com and nothing else" instead of being trusted to stay
+   * on task. Gates NAVIGATION only — subresources still load from any origin, because
+   * a guard that breaks CDNs gets switched off. See Page.restrictOrigins().
+   */
+  allowOrigins?: string[];
+  /**
    * WebGL backend:
    *  - "hardware": use the real GPU via ANGLE/EGL → genuine, consistent vendor.
    *    Works headless AND headful (no Xvfb needed). Best stealth — nothing spoofed.

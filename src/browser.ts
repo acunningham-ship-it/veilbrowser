@@ -12,6 +12,7 @@ export class Browser {
     private cdp: CDP,
     private launch: LaunchResult,
     private blockPrivate: boolean,
+    private allowOrigins: string[] | undefined,
     private fingerprint?: Fingerprint,
     /** True when we ATTACHED to an existing browser rather than launching it.
      *  Gates close(): we must never kill a process we did not start. */
@@ -25,7 +26,7 @@ export class Browser {
     // localhost/LAN. Opt out with { blockPrivateNetwork: false }.
     // A `fingerprint`, if given, is applied to every page at creation so a
     // coherent identity is in place before the first navigation.
-    return new Browser(cdp, launch, opts.blockPrivateNetwork ?? true, opts.fingerprint);
+    return new Browser(cdp, launch, opts.blockPrivateNetwork ?? true, opts.allowOrigins, opts.fingerprint);
   }
 
   /**
@@ -52,7 +53,7 @@ export class Browser {
    * it did not start — tearing down someone else's session as a side effect of
    * cleanup would be the worst possible default.
    */
-  static async connect(endpoint: string, opts: { blockPrivateNetwork?: boolean; fingerprint?: Fingerprint } = {}): Promise<Browser> {
+  static async connect(endpoint: string, opts: { blockPrivateNetwork?: boolean; allowOrigins?: string[]; fingerprint?: Fingerprint } = {}): Promise<Browser> {
     let wsUrl = endpoint;
     if (!/^wss?:\/\//i.test(endpoint)) {
       const origin = /^https?:\/\//i.test(endpoint) ? endpoint : `http://${endpoint}`;
@@ -75,7 +76,7 @@ export class Browser {
       maskWebgl: false,
       kill: () => {},
     } as LaunchResult;
-    return new Browser(cdp, attached, opts.blockPrivateNetwork ?? true, opts.fingerprint, true);
+    return new Browser(cdp, attached, opts.blockPrivateNetwork ?? true, opts.allowOrigins, opts.fingerprint, true);
   }
 
   /**
@@ -118,6 +119,7 @@ export class Browser {
     await page.init({
       maskWebgl: this.launch.maskWebgl,
       blockPrivateNetwork: this.blockPrivate,
+      allowOrigins: this.allowOrigins,
       fingerprint: this.fingerprint,
     });
     return page;

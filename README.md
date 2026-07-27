@@ -336,9 +336,38 @@ await page.blockPrivateNetwork();
 await page.unblockPrivateNetwork();
 ```
 
-Still allowed: the agent's own top-level navigation to a private host
-(`page.goto("http://localhost:3000")`), and a localhost page loading its own localhost
-resources — only a **public page reaching a private host** is blocked. Known gaps (honest):
+### Origin allowlist — confine the agent when you attach to a signed-in profile
+
+`Browser.connect()` attaches to a Chrome you already run, which is the only way to drive
+a logged-in profile — and it hands the agent **every session in that jar**. An agent told
+"check my order" can navigate to your mailbox, because it's the same browser. The
+allowlist is how a run says *where it may go* instead of being trusted to stay on task:
+
+```ts
+const browser = await Browser.connect("127.0.0.1:9222", { allowOrigins: ["github.com"] });
+// or per page, at runtime:
+await page.restrictOrigins(["github.com", "api.github.com"]);
+await page.unrestrictOrigins();
+```
+
+Any **document navigation** — top-level or sub-frame — to a host outside the list fails
+with `AccessDenied`. An entry matches its own host and subdomains on a dot boundary:
+`github.com` covers `api.github.com` and **not** `notgithub.com`.
+
+**What it does not do, stated plainly, because a security control that is over-trusted is
+worse than none:**
+
+- **Subresources are not gated.** A real page pulls images, fonts and scripts from other
+  origins; gating those breaks every site, and a guard that breaks sites gets switched
+  off. Cross-origin *reads* are already stopped by the same-origin policy — what this
+  closes is the agent navigating somewhere and acting as the signed-in user.
+- **Everything on an allowed origin is fully reachable**, as that user. Allowlisting
+  `github.com` grants the agent your GitHub.
+- **A beacon-style POST to an unlisted origin is not blocked** (it isn't a document).
+
+Still allowed by the private-network block: the agent's own top-level navigation to a
+private host (`page.goto("http://localhost:3000")`), and a localhost page loading its own
+localhost resources — only a **public page reaching a private host** is blocked. Known gaps (honest):
 raw **WebSocket** to a private host isn't interceptable via CDP's Fetch domain, so those
 fall back to Chrome's own Private Network Access (a timeout, not a uniform block); and
 exotic IP encodings (decimal/hex) aren't matched — real-world scanners use the canonical
@@ -441,6 +470,7 @@ DISPLAY=:98 python3 python/tests/test_smoke.py   # 21 checks, Python front end v
 Unit tests cover:
 - **PRNG (`human.test.ts`)**: xorshift32 determinism, range/int bounds, keystroke cadence, mouse timing
 - **Snapshot refs (`snapshot.test.ts`)**: ref numbering (1-based, sequential on a fresh document), AX-tree filtering
+- **Origin allowlist (`origin-allowlist.test.ts`)**: host+subdomain matching on a dot boundary (`notgithub.com` rejected), navigation to an unlisted host blocked, subresources deliberately not gated, unrestricted when unset
 - **Ref identity across snapshots (`ref-cross-snapshot.test.ts`)**: a survivor keeps its ref when an element above it is removed or inserted; a removed element's ref fails loudly; a stale ref never actuates a *different* element; numbering resets on navigation
 - **CDP framing (`cdp-messages.test.ts`)**: JSON-RPC structure, sessionId routing, command/response correlation
 - **Private-network classifier (`private-host.test.ts`)**: loopback/RFC1918 vs public host detection (the block's decision)
