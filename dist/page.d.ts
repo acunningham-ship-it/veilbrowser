@@ -73,6 +73,20 @@ export declare class Page {
     private rng;
     private mouse;
     private refs;
+    /**
+     * Stable ref identity. A backendNodeId keeps the SAME number for the lifetime of
+     * the document, so a number is NEVER reused for a different element.
+     *
+     * Refs used to be assigned 1..N per snapshot, which made them positional: removing
+     * an element earlier in the tree shifted every later ref down one, and an agent
+     * reusing a remembered number then actuated a DIFFERENT element and got success
+     * back. Measured 2026-07-27 — and insertion is not predictable either
+     * (`body.prepend` shifts, `appendChild` into a div above does not), so "did the DOM
+     * change in a way that renumbers?" is not a question a caller can answer.
+     * Memoising identity makes a stale ref either still correct, or loudly absent.
+     */
+    private refByNode;
+    private nextRef;
     private closed;
     private activeSessionId;
     private frameSessions;
@@ -229,6 +243,9 @@ export declare class Page {
         timeout?: number;
     }): Promise<T>;
     url(): Promise<string>;
+    /** Drop every ref AND its identity map. Navigation and frame switches invalidate
+     *  backendNodeIds wholesale, so keeping the old numbers would be meaningless. */
+    private resetRefs;
     /** Build the numbered element index from the accessibility tree. */
     snapshot(): Promise<Snapshot>;
     private boxCenter;

@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.4.0 — 2026-07-27
+
+### Fixed
+- **A ref is now an IDENTITY, not a position — a stale ref can no longer click a different
+  element and report success.** Refs were renumbered `1..N` on every `snapshot()`, so an agent
+  holding `ref 2` across a DOM change could press whatever slid into slot 2. Reproduced:
+  `snap1 [1:Alpha, 2:Bravo, 3:Charlie]` → a banner is dismissed → `snap2 [1:Bravo, 2:Charlie]`
+  → `click(2)` **did not throw and pressed Charlie**. That is the worst shape an agent failure
+  can take: it looks like it worked.
+
+  Reachable in practice, not theoretical: through MCP every tool call is independent, **no tool
+  re-snapshots before acting**, and the model holds refs in its own context.
+
+  **The detail that decided the design: a caller cannot predict renumbering.** Two insertion
+  paths, same logical mutation, opposite outcomes — `appendChild` into a div above leaves
+  numbering alone (the AX tree appends), while `document.body.prepend` shifts everything. So
+  "did the DOM change in a way that renumbers?" is not answerable by the consumer, which is why
+  documentation alone would not have fixed this.
+
+  Now `backendNodeId → ref` is memoised for the life of the document, so **a number is never
+  reused for a different element**. A removed node stops resolving and errors loudly. Identity
+  resets on navigation and frame switch.
+
+  Rejected alternatives, with reasons: **content-addressed refs** (hash of role+name+path)
+  break whenever an accessible name changes (`Loading…`→`Submit`, `Cart (2)`→`Cart (3)`, i18n)
+  and — far worse — silently **rebind among same-named siblings**, which is the standard case of
+  ten "Delete" buttons in a list; that reintroduces the exact silent-wrong-element bug, and the
+  disambiguating path is the selector fragility Veil exists to avoid. **Generation-tagging**
+  (reject every ref from an older snapshot) makes staleness loud but punishes correct usage,
+  forcing a full re-read after any re-snapshot.
+
+  **Cost, stated plainly:** refs now develop gaps and can appear out of order (a newly prepended
+  element is listed first while holding the highest number), and the identity map grows with
+  distinct nodes seen per document. Not pruned — it resets on navigation.
+
+  Credit to **u/Ok-Regret-2934** on r/AI_Agents, who said numbered elements "break on every dom
+  change." That was correct, and it was reachable and silent.
+
+### Changed
+- README no longer claims ref numbering is "sequential, no gaps" — that held only for the first
+  snapshot of a document. A doc that overpromises stability is how a caller comes to trust a
+  stale ref.
+
+### Verified
+209/209 tests. The 5 new cases in `tests/ref-cross-snapshot.test.ts` were checked for
+sensitivity by reverting `src/page.ts` alone: **4 of 5 go RED against the old implementation**
+(the fifth — numbering resets on navigation — correctly passes both ways). A green test nobody
+has seen fail would have been worth nothing here.
+
+
 ## 1.3.1 — 2026-07-26
 
 ### Fixed
