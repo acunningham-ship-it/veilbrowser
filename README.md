@@ -82,6 +82,52 @@ const png = await page.screenshot();  // PNG buffer for a vision model
 await browser.close();
 ```
 
+## Drive a browser you're already signed into
+
+Chrome locks a `user-data-dir`. The one profile holding your real logged-in sessions
+therefore **cannot be opened by a second Chrome**, which is why launching your own browser
+always gets you a fresh, logged-out, brand-new-looking session — the shape that gets
+challenged. `Browser.connect()` attaches to a browser that is already running instead:
+
+```bash
+# start Chrome yourself, with the profile that has your sessions in it
+google-chrome --remote-debugging-port=9222 --user-data-dir=~/.config/agent-profile
+```
+
+```ts
+import { Browser } from "@achamm/veilbrowser";
+
+const browser = await Browser.connect("127.0.0.1:9222");  // ws:// URL, http:// origin, or host:port
+const [page] = await browser.pages();                     // the tab that's already open
+await page.goto("https://example.com");
+
+await browser.close();   // DETACHES ONLY — never kills a browser it didn't start
+```
+
+This matters because Google, Reddit, Meta and TikTok score the **session**, not the IP: an
+established profile passes where a fresh one hits a wall.
+
+> ### ⚠️ The profile becomes part of your agent's security boundary
+>
+> This is the real cost of attaching, and it is worth stating plainly rather than leaving in
+> the fine print. **Whatever that Chrome profile is signed into, the agent can reach.** Point
+> it at your everyday browser and an agent that wanders — or a prompt-injected page telling it
+> to — has your email, your bank, your admin panels. There is no per-site sandbox inside a
+> profile; a cookie jar is all-or-nothing.
+>
+> **Use a dedicated profile signed into only what the task needs.** A separate
+> `--user-data-dir` per agent, logged into the two or three sites it actually works with,
+> keeps the blast radius equal to those sites instead of your whole digital life. The
+> private-network block is on by default for a related reason (a page cannot port-scan your
+> LAN), but it does nothing about credentials that are legitimately in the jar.
+>
+> Credit to `u/zhonglin` on r/AI_Agents for naming this precisely: reusing an authenticated
+> browser solves session continuity and moves the profile inside the agent's trust boundary.
+>
+> A fingerprint is deliberately **not** re-applied to an attached page — changing `navigator`
+> properties under a document the site has already fingerprinted is more detectable than
+> leaving them alone.
+
 ## Python
 
 There is a Python front end in [`python/`](python/) with the same core API:

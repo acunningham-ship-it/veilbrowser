@@ -43,6 +43,13 @@ This is the difference between "works on sites that allow anonymous access" and
 **session**, not the IP, so an established profile passes where a fresh one hits a
 wall.
 
+> **⚠️ The profile becomes part of your agent's security boundary.** Whatever that Chrome
+> profile is signed into, the agent can reach — there is no per-site sandbox inside a profile,
+> a cookie jar is all-or-nothing. Point it at your everyday browser and an agent that wanders,
+> or a prompt-injected page telling it to, has your email and your admin panels. **Use a
+> dedicated `user_data_dir` signed into only what the task needs**, so the blast radius is
+> those sites rather than your whole digital life.
+
 ## API
 
 ```python
