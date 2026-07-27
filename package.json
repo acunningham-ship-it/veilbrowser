@@ -34,7 +34,12 @@
     "anti-detect",
     "mcp",
     "cloudflare",
-    "scraping"
+    "scraping",
+    "modelcontextprotocol",
+    "model-context-protocol",
+    "playwright-alternative",
+    "puppeteer-alternative",
+    "devtools-protocol"
   ],
   "license": "MIT",
   "repository": {
