@@ -12,9 +12,26 @@
  *   VEIL_USER_DATA_DIR=/path/to/profile bun run src/mcp.ts  # persistent profile
  */
 import { createInterface } from "node:readline";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+/** Reported to MCP hosts as serverInfo.version. Read from package.json rather than
+ *  hardcoded — it sat at "0.3.0" through five releases while the package shipped 1.3.1,
+ *  and this string is what Glama and every MCP client display. */
+const VERSION = (() => {
+    try {
+        const here = dirname(fileURLToPath(import.meta.url));
+        for (const rel of ["../package.json", "./package.json", "../../package.json"]) {
+            try {
+                return JSON.parse(readFileSync(join(here, rel), "utf8")).version;
+            }
+            catch { }
+        }
+    }
+    catch { }
+    return "0.0.0-unknown";
+})();
 import { Browser } from "./browser.js";
 import { PRESETS, Fingerprint } from "./fingerprint.js";
 let browser = null;
@@ -263,7 +280,7 @@ async function handle(msg) {
             send({ jsonrpc: "2.0", id, result: {
                     protocolVersion: "2024-11-05",
                     capabilities: { tools: {} },
-                    serverInfo: { name: "veil", version: "0.3.0" },
+                    serverInfo: { name: "veil", version: VERSION },
                 } });
             return;
         }
