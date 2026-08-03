@@ -24,6 +24,29 @@ export interface Snapshot {
     text: string;
     elements: Element[];
 }
+/** One actionable element from domSnapshot() — located in-page, addressed by
+ *  viewport coordinates (feed x,y straight to clickAt), not an AX-tree ref. */
+export interface DomElement {
+    /** Position in this snapshot's list (not stable across snapshots). */
+    i: number;
+    tag: string;
+    role: string;
+    /** Best available label: aria-label ▸ innerText ▸ value ▸ placeholder ▸ title ▸ name. */
+    t: string;
+    /** Center of the element in viewport coordinates — pass to clickAt(x, y). */
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    editable: boolean;
+}
+export interface DomSnapshot {
+    url: string;
+    title: string;
+    /** `[0] button "Sign in" @120,340` per line. */
+    text: string;
+    elements: DomElement[];
+}
 /** One account offered in a FedCM account chooser. */
 export interface FedCmAccount {
     accountId: string;
@@ -270,6 +293,55 @@ export declare class Page {
     /** Build the numbered element index from the accessibility tree. */
     snapshot(): Promise<Snapshot>;
     private boxCenter;
+    /**
+     * Snapshot-free element locator — the one to reach for on heavy SPA editors
+     * (Ancestry, Notion, Figma, YouTube Studio) where snapshot() stalls or times
+     * out. snapshot() pulls Chrome's FULL accessibility tree
+     * (Accessibility.getFullAXTree) plus a getBoxModel per node; on a big
+     * virtualized DOM that is seconds of work or a hang. domSnapshot() does it in
+     * ONE in-page evaluate: no AX tree, no per-node round-trips.
+     *
+     * It PIERCES shadow DOM (a plain document.querySelectorAll does not, so
+     * web-component buttons — exactly the YouTube-Studio / Ancestry case — are
+     * invisible to naive DOM scraping; that used to be snapshot()'s only edge).
+     *
+     * Every element carries its center in viewport coords: feed x,y straight to
+     * clickAt() for a TRUSTED click (fires framework handlers a synthetic
+     * .click() silently drops). clickText()/fillText() wrap the common cases.
+     */
+    domSnapshot(opts?: {
+        max?: number;
+    }): Promise<DomSnapshot>;
+    /**
+     * The matcher behind clickText/fillText. Ranks visible elements against `query`
+     * by label: exact ▸ startsWith ▸ word-boundary ▸ substring; ties break toward
+     * the shortest (most specific) label, then topmost. Returns the chosen element
+     * or null. `nth` selects among equivalents; `editableOnly` restricts to fields.
+     */
+    findText(query: string, opts?: {
+        nth?: number;
+        exact?: boolean;
+        role?: string;
+        editableOnly?: boolean;
+    }): Promise<DomElement | null>;
+    /**
+     * Locate the best element matching `query` and TRUSTED-click its center — no
+     * snapshot ref, works where snapshot() hangs. Throws if nothing matches (so a
+     * miss is loud, not a silent no-op that reports success). Returns the element.
+     */
+    clickText(query: string, opts?: {
+        nth?: number;
+        exact?: boolean;
+        role?: string;
+    }): Promise<DomElement>;
+    /**
+     * Focus an editable field matched by its label/placeholder/aria text, clear it
+     * (Ctrl+A) and type `value`. The snapshot-free analogue of fill(ref, text).
+     * Throws if no editable field matches. Returns the field element.
+     */
+    fillText(query: string, value: string, opts?: {
+        nth?: number;
+    }): Promise<DomElement>;
     /** Move the cursor along a human curve to a target point. `buttons` mirrors
      *  CDP's bitmask (1 = left button down) — pass 1 while dragging so the move
      *  itself carries mousemove-with-button-held events a drag-and-drop library

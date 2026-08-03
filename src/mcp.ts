@@ -54,8 +54,14 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { waitUntil: { type: "string", enum: ["load", "networkidle"] } } } },
   { name: "veil_forward", description: "Go forward one entry in session history (errors if there's nothing later). waitUntil 'load' (default) or 'networkidle'.",
     inputSchema: { type: "object", properties: { waitUntil: { type: "string", enum: ["load", "networkidle"] } } } },
-  { name: "veil_snapshot", description: "Return the page as a numbered list of interactive elements from the accessibility tree. Use the [ref] numbers with veil_click / veil_fill. No CSS selectors needed.",
+  { name: "veil_snapshot", description: "Return the page as a numbered list of interactive elements from the accessibility tree. Use the [ref] numbers with veil_click / veil_fill. No CSS selectors needed. NOTE: on a heavy SPA editor (Ancestry, Notion, Figma) this pulls the FULL accessibility tree and can stall or time out — use veil_dom + veil_click_text there instead.",
     inputSchema: { type: "object", properties: {} } },
+  { name: "veil_dom", description: "Snapshot-free element list — the one to use when veil_snapshot stalls/times out on a heavy or virtualized page. ONE in-page pass (no accessibility tree, no per-node round-trips) that PIERCES shadow DOM, so it finds web-component buttons (YouTube Studio, Ancestry) that plain DOM scraping misses. Each line is `[i] tag \"label\" @x,y`; the x,y is the element center — feed it to veil_click_at, or just use veil_click_text.",
+    inputSchema: { type: "object", properties: { max: { type: "number", description: "cap on elements returned (default 300)" } } } },
+  { name: "veil_click_text", description: "Find the best visible element whose label matches `query` and TRUSTED-click its center — no snapshot ref, works where veil_snapshot hangs and where a synthetic click is ignored. Ranking: exact > startsWith > word-boundary > substring, ties toward the most specific. `nth` (0-based) picks among equivalent matches; `exact` requires a full-label match; `role` filters by ARIA role. Errors loudly if nothing matches (never a silent no-op).",
+    inputSchema: { type: "object", properties: { query: { type: "string" }, nth: { type: "number", description: "which match, 0-based (default 0)" }, exact: { type: "boolean", description: "require exact label match" }, role: { type: "string", description: "restrict to this ARIA role" } }, required: ["query"] } },
+  { name: "veil_fill_text", description: "Focus an editable field matched by its label/placeholder/aria text, clear it, and type `value` — the snapshot-free analogue of veil_fill for pages with no usable ref. Matches inputs/textareas/contenteditable only. Errors if no field matches.",
+    inputSchema: { type: "object", properties: { query: { type: "string" }, value: { type: "string" }, nth: { type: "number", description: "which match, 0-based (default 0)" } }, required: ["query", "value"] } },
   { name: "veil_click", description: "Click an element by its snapshot ref (human-like mouse path).",
     inputSchema: { type: "object", properties: { ref: { type: "number" } }, required: ["ref"] } },
   { name: "veil_fill", description: "Click a field by ref and type text into it (human cadence).",
@@ -143,6 +149,18 @@ async function callTool(name: string, args: any): Promise<any> {
     case "veil_snapshot": {
       const s = await p.snapshot();
       return text(`# ${s.title}\n${s.url}\n\n${s.text || "(no interactive elements)"}`);
+    }
+    case "veil_dom": {
+      const d = await p.domSnapshot({ max: args.max });
+      return text(`# ${d.title}\n${d.url}\n\n${d.text || "(no actionable elements)"}`);
+    }
+    case "veil_click_text": {
+      const el = await p.clickText(args.query, { nth: args.nth, exact: args.exact, role: args.role });
+      return text(`clicked ${JSON.stringify(el.t)} (${el.tag}${el.role ? `/${el.role}` : ""}) @${el.x},${el.y}`);
+    }
+    case "veil_fill_text": {
+      const el = await p.fillText(args.query, args.value, { nth: args.nth });
+      return text(`filled ${JSON.stringify(el.t)} @${el.x},${el.y} with ${args.value.length} chars`);
     }
     case "veil_click":
       await p.click(args.ref);

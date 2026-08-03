@@ -773,6 +773,131 @@ export class Page {
             return null;
         }
     }
+    /**
+     * Snapshot-free element locator — the one to reach for on heavy SPA editors
+     * (Ancestry, Notion, Figma, YouTube Studio) where snapshot() stalls or times
+     * out. snapshot() pulls Chrome's FULL accessibility tree
+     * (Accessibility.getFullAXTree) plus a getBoxModel per node; on a big
+     * virtualized DOM that is seconds of work or a hang. domSnapshot() does it in
+     * ONE in-page evaluate: no AX tree, no per-node round-trips.
+     *
+     * It PIERCES shadow DOM (a plain document.querySelectorAll does not, so
+     * web-component buttons — exactly the YouTube-Studio / Ancestry case — are
+     * invisible to naive DOM scraping; that used to be snapshot()'s only edge).
+     *
+     * Every element carries its center in viewport coords: feed x,y straight to
+     * clickAt() for a TRUSTED click (fires framework handlers a synthetic
+     * .click() silently drops). clickText()/fillText() wrap the common cases.
+     */
+    async domSnapshot(opts = {}) {
+        const max = opts.max ?? 300;
+        const js = `(() => {
+      const SEL = 'a,button,input,textarea,select,summary,label,[role=button],[role=link],[role=option],[role=menuitem],[role=menuitemcheckbox],[role=tab],[role=checkbox],[role=radio],[role=switch],[role=combobox],[contenteditable=""],[contenteditable=true],[onclick],[tabindex]';
+      const out = [], seen = new Set();
+      const box = (e) => {
+        const r = e.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return null;
+        if (r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) return null;
+        const s = getComputedStyle(e);
+        if (s.visibility === 'hidden' || s.display === 'none' || Number(s.opacity) === 0) return null;
+        return r;
+      };
+      const label = (e) => (
+        e.getAttribute('aria-label') || (e.innerText || '').trim() || e.value ||
+        e.placeholder || e.getAttribute('title') || e.getAttribute('name') || ''
+      ).replace(/\\s+/g, ' ').trim().slice(0, 100);
+      const walk = (root) => {
+        let all;
+        try { all = root.querySelectorAll('*'); } catch { return; }
+        for (const e of all) {
+          if (e.matches && e.matches(SEL) && !seen.has(e)) {
+            seen.add(e);
+            const r = box(e);
+            if (r) {
+              const tag = e.tagName.toLowerCase();
+              out.push({
+                i: out.length, tag, role: e.getAttribute('role') || '', t: label(e),
+                x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+                w: Math.round(r.width), h: Math.round(r.height),
+                editable: tag === 'input' || tag === 'textarea' || e.isContentEditable === true,
+              });
+            }
+          }
+          if (e.shadowRoot) walk(e.shadowRoot);
+        }
+      };
+      walk(document);
+      return out.slice(0, ${max});
+    })()`;
+        const elements = await this.evaluate(js);
+        const [url, title] = await Promise.all([
+            this.evaluate("location.href"),
+            this.evaluate("document.title"),
+        ]);
+        const text = elements
+            .map((e) => `[${e.i}] ${e.tag}${e.role ? `/${e.role}` : ""}${e.editable ? " (input)" : ""} ${JSON.stringify(e.t)} @${e.x},${e.y}`)
+            .join("\n");
+        return { url, title, text, elements };
+    }
+    /**
+     * The matcher behind clickText/fillText. Ranks visible elements against `query`
+     * by label: exact ▸ startsWith ▸ word-boundary ▸ substring; ties break toward
+     * the shortest (most specific) label, then topmost. Returns the chosen element
+     * or null. `nth` selects among equivalents; `editableOnly` restricts to fields.
+     */
+    async findText(query, opts = {}) {
+        const { elements } = await this.domSnapshot();
+        const q = query.toLowerCase().replace(/\s+/g, " ").trim();
+        const esc = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const wb = new RegExp(`\\b${esc}`);
+        const scored = elements
+            .filter((e) => (!opts.editableOnly || e.editable) && (!opts.role || e.role === opts.role))
+            .map((e) => {
+            const t = e.t.toLowerCase();
+            let score = -1;
+            if (t === q)
+                score = 100;
+            else if (opts.exact)
+                score = -1;
+            else if (t.startsWith(q))
+                score = 80;
+            else if (wb.test(t))
+                score = 60;
+            else if (t.includes(q))
+                score = 40;
+            return { e, score };
+        })
+            .filter((s) => s.score >= 0)
+            .sort((a, b) => b.score - a.score || a.e.t.length - b.e.t.length || a.e.y - b.e.y);
+        return scored[opts.nth ?? 0]?.e ?? null;
+    }
+    /**
+     * Locate the best element matching `query` and TRUSTED-click its center — no
+     * snapshot ref, works where snapshot() hangs. Throws if nothing matches (so a
+     * miss is loud, not a silent no-op that reports success). Returns the element.
+     */
+    async clickText(query, opts = {}) {
+        const el = await this.findText(query, opts);
+        if (!el)
+            throw new Error(`clickText: no visible element matching ${JSON.stringify(query)}`);
+        await this.clickAt(el.x, el.y);
+        return el;
+    }
+    /**
+     * Focus an editable field matched by its label/placeholder/aria text, clear it
+     * (Ctrl+A) and type `value`. The snapshot-free analogue of fill(ref, text).
+     * Throws if no editable field matches. Returns the field element.
+     */
+    async fillText(query, value, opts = {}) {
+        const el = await this.findText(query, { nth: opts.nth, editableOnly: true });
+        if (!el)
+            throw new Error(`fillText: no editable field matching ${JSON.stringify(query)}`);
+        await this.clickAt(el.x, el.y);
+        await sleep(this.rng.range(40, 90));
+        await this.sendKey({ key: "a", code: "KeyA", vk: 65, modifiers: 2 }); // Ctrl+A select-all
+        await this.type(value);
+        return el;
+    }
     /** Move the cursor along a human curve to a target point. `buttons` mirrors
      *  CDP's bitmask (1 = left button down) — pass 1 while dragging so the move
      *  itself carries mousemove-with-button-held events a drag-and-drop library
