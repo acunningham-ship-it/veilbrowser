@@ -325,9 +325,33 @@ export declare class Page {
         editableOnly?: boolean;
     }): Promise<DomElement | null>;
     /**
-     * Locate the best element matching `query` and TRUSTED-click its center — no
-     * snapshot ref, works where snapshot() hangs. Throws if nothing matches (so a
-     * miss is loud, not a silent no-op that reports success). Returns the element.
+     * The atomic locate-and-position primitive behind clickText/fillText — the one
+     * that makes writing to a heavy SPA reliable instead of coin-flip.
+     *
+     * findText() ranks against a PRIOR domSnapshot: its coords are viewport-relative
+     * and go stale the instant anything scrolls or re-lays-out (the exact bug that
+     * made a live-tree hint-click land on nothing). locateText instead does the walk,
+     * the scoring, the scroll-into-view AND the coord read in ONE in-page pass, so the
+     * returned x,y are guaranteed fresh and on-screen for the trusted click that
+     * follows. It also sees BELOW-THE-FOLD elements (its own walk isn't viewport-gated
+     * like domSnapshot), so it can drive a form field the page hasn't scrolled to yet.
+     *
+     * `behavior:'instant'` defeats CSS scroll-behavior:smooth — otherwise getBounding-
+     * ClientRect would read a mid-animation position and we'd click where the element
+     * used to be. Returns the element (fresh center coords) or null.
+     */
+    locateText(query: string, opts?: {
+        nth?: number;
+        exact?: boolean;
+        role?: string;
+        editableOnly?: boolean;
+    }): Promise<DomElement | null>;
+    /**
+     * Locate the best element matching `query`, scroll it into view and TRUSTED-click
+     * its FRESH center — no snapshot ref, works where snapshot() hangs. Throws if
+     * nothing matches (so a miss is loud, not a silent no-op that reports success).
+     * Returns the element. Verify the RESULT externally — a landed click is not a
+     * completed action.
      */
     clickText(query: string, opts?: {
         nth?: number;
@@ -335,9 +359,9 @@ export declare class Page {
         role?: string;
     }): Promise<DomElement>;
     /**
-     * Focus an editable field matched by its label/placeholder/aria text, clear it
-     * (Ctrl+A) and type `value`. The snapshot-free analogue of fill(ref, text).
-     * Throws if no editable field matches. Returns the field element.
+     * Focus an editable field matched by its label/placeholder/aria text (scrolled
+     * into view first), clear it (Ctrl+A) and type `value`. The snapshot-free analogue
+     * of fill(ref, text). Throws if no editable field matches. Returns the field.
      */
     fillText(query: string, value: string, opts?: {
         nth?: number;
@@ -395,10 +419,50 @@ export declare class Page {
     /** Drag between two absolute viewport points — for when neither the source
      *  card nor the drop target has a resolvable snapshot ref. */
     dragAt(fromX: number, fromY: number, toX: number, toY: number): Promise<void>;
+    /**
+     * Drag through a sequence of waypoints instead of straight to the target,
+     * with a longer dwell at each stop. Two real problems on infinite-canvas
+     * editors (n8n, GHL's builder) need this over a straight dragCore:
+     *   1. Auto-scroll: dragging a node past the visible edge only pans the
+     *      canvas if the pointer LINGERS near the edge — a straight A-to-B move
+     *      passes through that zone in one frame and never triggers it. Route
+     *      through an edge point, dwell, then continue.
+     *   2. Connector snapping: n8n's output->input connection drag highlights
+     *      the nearest valid target as you approach it; hovering just short of
+     *      the final point before completing gives that highlight a frame to
+     *      render, same as a human's hand slowing down on approach.
+     */
+    private dragPathCore;
+    /** Drag an element by ref through a sequence of intermediate viewport points to a final drop. */
+    dragRefToPath(ref: number, via: Point[]): Promise<void>;
+    /** Drag through a sequence of absolute viewport points (first = pickup, last = drop). */
+    dragAtPath(points: Point[]): Promise<void>;
     /** Bring this page's target to the foreground — CDP Input only routes to the active target. */
     bringToFront(): Promise<void>;
     /** Trusted click at absolute viewport coords (when you can't resolve a snapshot ref). */
     clickAt(x: number, y: number): Promise<void>;
+    /**
+     * Double-click: two press/release pairs, second one carrying clickCount:2 —
+     * that's the field Chrome actually keys `dblclick` off, not two fast
+     * single clicks. Needed for n8n's canvas (double-click a node opens its
+     * config panel) and GHL's builder (double-click an element to edit it
+     * in place) — a plain click() only selects/focuses on both.
+     */
+    private doubleClickCore;
+    /** Double-click an element by snapshot ref. */
+    doubleClick(ref: number): Promise<void>;
+    /** Double-click at absolute viewport coords (canvas nodes rarely have a resolvable ref). */
+    doubleClickAt(x: number, y: number): Promise<void>;
+    /**
+     * Right-click: opens the context menu — n8n's "add node here" canvas menu,
+     * a node's duplicate/delete/pin menu, GHL's element context menu. The menu
+     * itself then just needs a normal click() or clickText() on the option.
+     */
+    private rightClickCore;
+    /** Right-click an element by snapshot ref. */
+    rightClick(ref: number): Promise<void>;
+    /** Right-click at absolute viewport coords. */
+    rightClickAt(x: number, y: number): Promise<void>;
     /**
      * Dispatch one well-formed key: rawKeyDown, then a `char` event only if the
      * key produces text, then keyUp (no text) — the exact shape press() relies on,
@@ -412,7 +476,16 @@ export declare class Page {
      * the current cursor position (positive dy scrolls down, positive dx right).
      * Use it to reveal lazy-loaded / off-screen content before snapshot().
      */
-    scroll(dx: number, dy: number): Promise<void>;
+    /**
+     * `ctrl:true` sends the wheel event with the Ctrl modifier bit set — this is
+     * how a real trackpad pinch-zoom (and Chrome's own Ctrl+scroll zoom) reads
+     * at the DOM level, and it's what infinite-canvas libraries (n8n's Vue Flow,
+     * most GHL/Webflow-style builders) key their zoom-vs-pan branch off. Plain
+     * scroll pans/scrolls the canvas; Ctrl+scroll zooms it.
+     */
+    scroll(dx: number, dy: number, opts?: {
+        ctrl?: boolean;
+    }): Promise<void>;
     /** Type text into the focused element with human cadence. Each character is
      *  dispatched as a real keydown/char/keyUp with the right key, code, and
      *  virtual-key code (see keyInfo) — the bare text-only events this used to send

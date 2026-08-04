@@ -968,28 +968,116 @@ export class Page {
   }
 
   /**
-   * Locate the best element matching `query` and TRUSTED-click its center — no
-   * snapshot ref, works where snapshot() hangs. Throws if nothing matches (so a
-   * miss is loud, not a silent no-op that reports success). Returns the element.
+   * The atomic locate-and-position primitive behind clickText/fillText — the one
+   * that makes writing to a heavy SPA reliable instead of coin-flip.
+   *
+   * findText() ranks against a PRIOR domSnapshot: its coords are viewport-relative
+   * and go stale the instant anything scrolls or re-lays-out (the exact bug that
+   * made a live-tree hint-click land on nothing). locateText instead does the walk,
+   * the scoring, the scroll-into-view AND the coord read in ONE in-page pass, so the
+   * returned x,y are guaranteed fresh and on-screen for the trusted click that
+   * follows. It also sees BELOW-THE-FOLD elements (its own walk isn't viewport-gated
+   * like domSnapshot), so it can drive a form field the page hasn't scrolled to yet.
+   *
+   * `behavior:'instant'` defeats CSS scroll-behavior:smooth — otherwise getBounding-
+   * ClientRect would read a mid-animation position and we'd click where the element
+   * used to be. Returns the element (fresh center coords) or null.
+   */
+  async locateText(
+    query: string,
+    opts: { nth?: number; exact?: boolean; role?: string; editableOnly?: boolean } = {},
+  ): Promise<DomElement | null> {
+    const spec = {
+      q: query.toLowerCase().replace(/\s+/g, " ").trim(),
+      exact: !!opts.exact,
+      role: opts.role || "",
+      editableOnly: !!opts.editableOnly,
+      nth: opts.nth ?? 0,
+    };
+    const js = `(() => {
+      const SPEC = ${JSON.stringify(spec)};
+      const SEL = 'a,button,input,textarea,select,summary,label,[role=button],[role=link],[role=option],[role=menuitem],[role=menuitemcheckbox],[role=tab],[role=checkbox],[role=radio],[role=switch],[role=combobox],[contenteditable=""],[contenteditable=true],[onclick],[tabindex]';
+      const seen = new Set(), cand = [];
+      const label = (e) => (
+        e.getAttribute('aria-label') || (e.innerText || '').trim() || e.value ||
+        e.placeholder || e.getAttribute('title') || e.getAttribute('name') || ''
+      ).replace(/\\s+/g, ' ').trim();
+      const vis = (e) => {
+        const r = e.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return false;
+        const s = getComputedStyle(e);
+        return s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) !== 0;
+      };
+      const walk = (root) => {
+        let all;
+        try { all = root.querySelectorAll('*'); } catch { return; }
+        for (const e of all) {
+          if (e.matches && e.matches(SEL) && !seen.has(e)) {
+            seen.add(e);
+            if (vis(e)) {
+              const tag = e.tagName.toLowerCase();
+              const ed = tag === 'input' || tag === 'textarea' || e.isContentEditable === true;
+              const role = e.getAttribute('role') || '';
+              if ((!SPEC.editableOnly || ed) && (!SPEC.role || role === SPEC.role)) {
+                cand.push({ e, t: label(e).toLowerCase(), tag, role, ed });
+              }
+            }
+          }
+          if (e.shadowRoot) walk(e.shadowRoot);
+        }
+      };
+      walk(document);
+      const scored = cand.map((c) => {
+        const t = c.t; let s = -1;
+        if (t === SPEC.q) s = 100;
+        else if (!SPEC.exact) {
+          if (t.startsWith(SPEC.q)) s = 80;
+          else if ((' ' + t).includes(' ' + SPEC.q)) s = 60; // word-start, no regex
+          else if (t.includes(SPEC.q)) s = 40;
+        }
+        return { c, s };
+      }).filter((x) => x.s >= 0).sort((a, b) => b.s - a.s || a.c.t.length - b.c.t.length);
+      const pick = scored[SPEC.nth];
+      if (!pick) return null;
+      const el = pick.c.e;
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      const r = el.getBoundingClientRect();
+      return {
+        i: 0, tag: pick.c.tag, role: pick.c.role, t: label(el).slice(0, 100),
+        x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+        w: Math.round(r.width), h: Math.round(r.height), editable: pick.c.ed,
+      };
+    })()`;
+    return this.evaluate<DomElement | null>(js);
+  }
+
+  /**
+   * Locate the best element matching `query`, scroll it into view and TRUSTED-click
+   * its FRESH center — no snapshot ref, works where snapshot() hangs. Throws if
+   * nothing matches (so a miss is loud, not a silent no-op that reports success).
+   * Returns the element. Verify the RESULT externally — a landed click is not a
+   * completed action.
    */
   async clickText(
     query: string,
     opts: { nth?: number; exact?: boolean; role?: string } = {},
   ): Promise<DomElement> {
-    const el = await this.findText(query, opts);
+    const el = await this.locateText(query, opts);
     if (!el) throw new Error(`clickText: no visible element matching ${JSON.stringify(query)}`);
+    await sleep(this.rng.range(280, 460)); // let scroll + any reflow settle before the click
     await this.clickAt(el.x, el.y);
     return el;
   }
 
   /**
-   * Focus an editable field matched by its label/placeholder/aria text, clear it
-   * (Ctrl+A) and type `value`. The snapshot-free analogue of fill(ref, text).
-   * Throws if no editable field matches. Returns the field element.
+   * Focus an editable field matched by its label/placeholder/aria text (scrolled
+   * into view first), clear it (Ctrl+A) and type `value`. The snapshot-free analogue
+   * of fill(ref, text). Throws if no editable field matches. Returns the field.
    */
   async fillText(query: string, value: string, opts: { nth?: number } = {}): Promise<DomElement> {
-    const el = await this.findText(query, { nth: opts.nth, editableOnly: true });
+    const el = await this.locateText(query, { nth: opts.nth, editableOnly: true });
     if (!el) throw new Error(`fillText: no editable field matching ${JSON.stringify(query)}`);
+    await sleep(this.rng.range(280, 460)); // let scroll settle
     await this.clickAt(el.x, el.y);
     await sleep(this.rng.range(40, 90));
     await this.sendKey({ key: "a", code: "KeyA", vk: 65, modifiers: 2 }); // Ctrl+A select-all
@@ -1145,6 +1233,48 @@ export class Page {
     await this.dragCore(fromX, fromY, toX, toY);
   }
 
+  /**
+   * Drag through a sequence of waypoints instead of straight to the target,
+   * with a longer dwell at each stop. Two real problems on infinite-canvas
+   * editors (n8n, GHL's builder) need this over a straight dragCore:
+   *   1. Auto-scroll: dragging a node past the visible edge only pans the
+   *      canvas if the pointer LINGERS near the edge — a straight A-to-B move
+   *      passes through that zone in one frame and never triggers it. Route
+   *      through an edge point, dwell, then continue.
+   *   2. Connector snapping: n8n's output->input connection drag highlights
+   *      the nearest valid target as you approach it; hovering just short of
+   *      the final point before completing gives that highlight a frame to
+   *      render, same as a human's hand slowing down on approach.
+   */
+  private async dragPathCore(points: Point[]) {
+    if (points.length < 2) throw new Error("dragPath: need at least 2 points (from, ...via, to)");
+    const [first, ...rest] = points;
+    await this.moveTo(first);
+    await sleep(this.rng.range(30, 90));
+    const downCommon = { x: first.x, y: first.y, button: "left" as const, clickCount: 1 };
+    await this.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...downCommon });
+    await sleep(this.rng.range(40, 100)); // dwell so the library's own drag-start threshold fires
+    for (const p of rest) {
+      await this.moveTo(p, 1); // move WITH the button held
+      await sleep(this.rng.range(80, 180)); // longer dwell per waypoint than a plain 2-point drag
+    }
+    const last = points[points.length - 1];
+    await sleep(this.rng.range(40, 100));
+    const upCommon = { x: last.x, y: last.y, button: "left" as const, clickCount: 1 };
+    await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...upCommon });
+  }
+
+  /** Drag an element by ref through a sequence of intermediate viewport points to a final drop. */
+  async dragRefToPath(ref: number, via: Point[]) {
+    const from = await this.freshCenter(ref, "dragRefToPath");
+    await this.dragPathCore([from, ...via]);
+  }
+
+  /** Drag through a sequence of absolute viewport points (first = pickup, last = drop). */
+  async dragAtPath(points: Point[]) {
+    await this.dragPathCore(points);
+  }
+
   /** Bring this page's target to the foreground — CDP Input only routes to the active target. */
   async bringToFront() {
     await this.send("Page.bringToFront");
@@ -1158,6 +1288,64 @@ export class Page {
     await this.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...common });
     await sleep(this.rng.range(40, 110));
     await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...common });
+  }
+
+  /**
+   * Double-click: two press/release pairs, second one carrying clickCount:2 —
+   * that's the field Chrome actually keys `dblclick` off, not two fast
+   * single clicks. Needed for n8n's canvas (double-click a node opens its
+   * config panel) and GHL's builder (double-click an element to edit it
+   * in place) — a plain click() only selects/focuses on both.
+   */
+  private async doubleClickCore(x: number, y: number) {
+    await this.moveTo({ x, y });
+    await sleep(this.rng.range(30, 90));
+    const base = { x, y, button: "left" as const };
+    await this.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, clickCount: 1, ...base });
+    await sleep(this.rng.range(20, 40));
+    await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, clickCount: 1, ...base });
+    await sleep(this.rng.range(30, 80)); // well inside the OS double-click window (~500ms), but not simultaneous
+    await this.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, clickCount: 2, ...base });
+    await sleep(this.rng.range(20, 40));
+    await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, clickCount: 2, ...base });
+  }
+
+  /** Double-click an element by snapshot ref. */
+  async doubleClick(ref: number) {
+    const center = await this.freshCenter(ref, "doubleClick");
+    await this.assertHittable(ref, center, "doubleClick");
+    await this.doubleClickCore(center.x, center.y);
+  }
+
+  /** Double-click at absolute viewport coords (canvas nodes rarely have a resolvable ref). */
+  async doubleClickAt(x: number, y: number) {
+    await this.doubleClickCore(x, y);
+  }
+
+  /**
+   * Right-click: opens the context menu — n8n's "add node here" canvas menu,
+   * a node's duplicate/delete/pin menu, GHL's element context menu. The menu
+   * itself then just needs a normal click() or clickText() on the option.
+   */
+  private async rightClickCore(x: number, y: number) {
+    await this.moveTo({ x, y });
+    await sleep(this.rng.range(30, 90));
+    const common = { x, y, button: "right" as const, clickCount: 1 };
+    await this.send("Input.dispatchMouseEvent", { type: "mousePressed", buttons: 2, ...common });
+    await sleep(this.rng.range(40, 110));
+    await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...common });
+  }
+
+  /** Right-click an element by snapshot ref. */
+  async rightClick(ref: number) {
+    const center = await this.freshCenter(ref, "rightClick");
+    await this.assertHittable(ref, center, "rightClick");
+    await this.rightClickCore(center.x, center.y);
+  }
+
+  /** Right-click at absolute viewport coords. */
+  async rightClickAt(x: number, y: number) {
+    await this.rightClickCore(x, y);
   }
 
   /**
@@ -1185,13 +1373,21 @@ export class Page {
    * the current cursor position (positive dy scrolls down, positive dx right).
    * Use it to reveal lazy-loaded / off-screen content before snapshot().
    */
-  async scroll(dx: number, dy: number) {
+  /**
+   * `ctrl:true` sends the wheel event with the Ctrl modifier bit set — this is
+   * how a real trackpad pinch-zoom (and Chrome's own Ctrl+scroll zoom) reads
+   * at the DOM level, and it's what infinite-canvas libraries (n8n's Vue Flow,
+   * most GHL/Webflow-style builders) key their zoom-vs-pan branch off. Plain
+   * scroll pans/scrolls the canvas; Ctrl+scroll zooms it.
+   */
+  async scroll(dx: number, dy: number, opts: { ctrl?: boolean } = {}) {
     await this.send("Input.dispatchMouseEvent", {
       type: "mouseWheel",
       x: this.mouse.x,
       y: this.mouse.y,
       deltaX: dx,
       deltaY: dy,
+      modifiers: opts.ctrl ? 2 : 0, // CDP bitfield: Ctrl=2
     });
     await sleep(this.rng.range(80, 200)); // settle, like a human watching content load
   }

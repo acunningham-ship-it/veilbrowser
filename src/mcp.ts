@@ -64,6 +64,10 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { query: { type: "string" }, value: { type: "string" }, nth: { type: "number", description: "which match, 0-based (default 0)" } }, required: ["query", "value"] } },
   { name: "veil_click", description: "Click an element by its snapshot ref (human-like mouse path).",
     inputSchema: { type: "object", properties: { ref: { type: "number" } }, required: ["ref"] } },
+  { name: "veil_double_click", description: "Double-click an element (by ref) or absolute viewport coords — two real click events, the second carrying clickCount:2, which is what triggers a DOM 'dblclick'. Use this for n8n (double-click a node opens its config panel) and GHL/page builders (double-click an element to edit it in place); a plain veil_click only selects/focuses on these.",
+    inputSchema: { type: "object", properties: { ref: { type: "number" }, x: { type: "number" }, y: { type: "number" } } } },
+  { name: "veil_right_click", description: "Right-click an element (by ref) or absolute viewport coords to open a context menu — n8n's canvas 'add node here' menu, a node's duplicate/delete/pin menu, or GHL's element menu. Read the menu with veil_snapshot/veil_dom afterward and click the option normally.",
+    inputSchema: { type: "object", properties: { ref: { type: "number" }, x: { type: "number" }, y: { type: "number" } } } },
   { name: "veil_fill", description: "Click a field by ref and type text into it (human cadence).",
     inputSchema: { type: "object", properties: { ref: { type: "number" }, text: { type: "string" } }, required: ["ref", "text"] } },
   { name: "veil_type", description: "Type text into the currently focused element.",
@@ -72,8 +76,8 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { ref: { type: "number" }, value: { type: "string" } }, required: ["ref", "value"] } },
   { name: "veil_press", description: "Press a single named key on the focused element. Use 'Enter' to submit a search box or form (fill a field, then veil_press Enter). Supported: Enter, Tab, Escape, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown.",
     inputSchema: { type: "object", properties: { key: { type: "string", enum: ["Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"] } }, required: ["key"] } },
-  { name: "veil_scroll", description: "Scroll the page by a pixel delta via a real mouse-wheel event (positive dy scrolls down, positive dx scrolls right). Reveals lazy-loaded / off-screen content; re-run veil_snapshot after.",
-    inputSchema: { type: "object", properties: { dx: { type: "number", description: "horizontal pixels (default 0)" }, dy: { type: "number", description: "vertical pixels (positive = down)" } }, required: ["dy"] } },
+  { name: "veil_scroll", description: "Scroll the page by a pixel delta via a real mouse-wheel event (positive dy scrolls down, positive dx scrolls right). Reveals lazy-loaded / off-screen content; re-run veil_snapshot after. Pass ctrl:true to zoom instead of pan/scroll — infinite-canvas editors (n8n's workflow canvas, most GHL/Webflow-style builders) branch zoom-vs-pan on the Ctrl modifier bit, same as a trackpad pinch.",
+    inputSchema: { type: "object", properties: { dx: { type: "number", description: "horizontal pixels (default 0)" }, dy: { type: "number", description: "vertical pixels (positive = down); negative = zoom in when ctrl:true" }, ctrl: { type: "boolean", description: "hold Ctrl — zoom instead of pan on canvas editors" } }, required: ["dy"] } },
   { name: "veil_set_viewport", description: "Set the viewport size (and optional deviceScaleFactor / mobile emulation) — the page sees this as window.innerWidth/Height, screen size, and devicePixelRatio. Emulate a phone or force a fixed desktop size for reproducible screenshots.",
     inputSchema: { type: "object", properties: { width: { type: "number" }, height: { type: "number" }, deviceScaleFactor: { type: "number", description: "device pixel ratio (default 1)" }, mobile: { type: "boolean", description: "mobile emulation (default false)" } }, required: ["width", "height"] } },
   { name: "veil_set_user_agent", description: "Override the User-Agent at runtime, keeping the Sec-CH-UA client-hint brands aligned with it (a bare UA with mismatched hints is a fingerprint tell).",
@@ -116,8 +120,8 @@ const TOOLS = [
   { name: "veil_fedcm_signin", description: "Complete a federated ('Sign in with Google', FedCM) login that Chrome renders as a native chooser no click can reach: waits for the intercepted account chooser, selects an account, and returns it. Pass triggerRef to first click an active sign-in button; omit it for one-tap/passive flows (call veil_fedcm_enable before navigating). accountIndex defaults to 0.",
     inputSchema: { type: "object", properties: { triggerRef: { type: "number" }, accountIndex: { type: "number" } } } },
   { name: "veil_close", description: "Close the browser.", inputSchema: { type: "object", properties: {} } },
-  { name: "veil_drag", description: "Drag from one point to another — real mousedown -> mousemove(button held) -> mouseup, not the HTML5 drag events. Use this for 'drag a card onto a canvas' UIs (site/page builders, Kanban boards, sortable lists) whose drop targets don't respond to a plain click. Pass `ref` for the source if it has a snapshot ref, otherwise `fromX`/`fromY`; the destination is almost always a plain div with no ref, so give `toX`/`toY` read off a veil_screenshot.",
-    inputSchema: { type: "object", properties: { ref: { type: "number" }, fromX: { type: "number" }, fromY: { type: "number" }, toX: { type: "number" }, toY: { type: "number" } }, required: ["toX", "toY"] } },
+  { name: "veil_drag", description: "Drag from one point to another — real mousedown -> mousemove(button held) -> mouseup, not the HTML5 drag events. Use this for 'drag a card onto a canvas' UIs (site/page builders, Kanban boards, sortable lists, n8n's node canvas, GHL's builder) whose drop targets don't respond to a plain click. Pass `ref` for the source if it has a snapshot ref, otherwise `fromX`/`fromY`; the destination is almost always a plain div with no ref, so give `toX`/`toY` read off a veil_screenshot. Pass `via` (a list of {x,y} points read off intermediate screenshots) when the straight-line drag isn't enough — dragging a node past the visible edge to trigger canvas auto-scroll, or slowing down on approach to a connector so its snap-highlight has a frame to render; each via point gets a longer dwell than a plain 2-point drag.",
+    inputSchema: { type: "object", properties: { ref: { type: "number" }, fromX: { type: "number" }, fromY: { type: "number" }, toX: { type: "number" }, toY: { type: "number" }, via: { type: "array", description: "intermediate waypoints, in order, before the final toX/toY", items: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"] } } }, required: ["toX", "toY"] } },
   { name: "veil_frames", description: "List cross-origin child iframes discovered on the current page (e.g. a drag-and-drop site builder whose whole canvas is one iframe on a different subdomain). Same-origin iframes don't need this — they already show up in a normal veil_snapshot. Call after veil_goto if a page you expect to interact with returns '(no interactive elements)'.",
     inputSchema: { type: "object", properties: {} } },
   { name: "veil_use_frame", description: "Point every following veil_snapshot/veil_click/veil_fill/veil_type/veil_eval call at one child iframe (index from veil_frames), instead of the main page. Omit index (or pass null) to switch back to the main page. Existing refs are invalidated on switch — call veil_snapshot again after switching.",
@@ -165,6 +169,16 @@ async function callTool(name: string, args: any): Promise<any> {
     case "veil_click":
       await p.click(args.ref);
       return text(`clicked [${args.ref}]`);
+    case "veil_double_click":
+      if (args.ref != null) await p.doubleClick(args.ref);
+      else if (args.x != null && args.y != null) await p.doubleClickAt(args.x, args.y);
+      else throw new Error("veil_double_click: pass either ref, or both x and y");
+      return text(args.ref != null ? `double-clicked [${args.ref}]` : `double-clicked (${args.x}, ${args.y})`);
+    case "veil_right_click":
+      if (args.ref != null) await p.rightClick(args.ref);
+      else if (args.x != null && args.y != null) await p.rightClickAt(args.x, args.y);
+      else throw new Error("veil_right_click: pass either ref, or both x and y");
+      return text(args.ref != null ? `right-clicked [${args.ref}]` : `right-clicked (${args.x}, ${args.y})`);
     case "veil_fill":
       await p.fill(args.ref, args.text);
       return text(`filled [${args.ref}]`);
@@ -177,8 +191,8 @@ async function callTool(name: string, args: any): Promise<any> {
     case "veil_select":
       return text(`set <select> [${args.ref}] to ${JSON.stringify(await p.select(args.ref, args.value))}`);
     case "veil_scroll":
-      await p.scroll(args.dx ?? 0, args.dy ?? 0);
-      return text(`scrolled (${args.dx ?? 0}, ${args.dy ?? 0})`);
+      await p.scroll(args.dx ?? 0, args.dy ?? 0, { ctrl: args.ctrl });
+      return text(`${args.ctrl ? "zoomed" : "scrolled"} (${args.dx ?? 0}, ${args.dy ?? 0})`);
     case "veil_set_viewport":
       await p.setViewport({ width: args.width, height: args.height, deviceScaleFactor: args.deviceScaleFactor, mobile: args.mobile });
       return text(`viewport set to ${args.width}x${args.height}${args.mobile ? " (mobile)" : ""}`);
@@ -258,9 +272,12 @@ async function callTool(name: string, args: any): Promise<any> {
       return text(`signed in via FedCM as ${account.email ?? account.name ?? account.accountId}`);
     }
     case "veil_drag":
-      if (args.ref != null) await p.dragRefTo(args.ref, args.toX, args.toY);
+      if (args.via?.length) {
+        if (args.ref != null) await p.dragRefToPath(args.ref, [...args.via, { x: args.toX, y: args.toY }]);
+        else await p.dragAtPath([{ x: args.fromX, y: args.fromY }, ...args.via, { x: args.toX, y: args.toY }]);
+      } else if (args.ref != null) await p.dragRefTo(args.ref, args.toX, args.toY);
       else await p.dragAt(args.fromX, args.fromY, args.toX, args.toY);
-      return text(`dragged to (${args.toX}, ${args.toY})`);
+      return text(`dragged to (${args.toX}, ${args.toY})${args.via?.length ? ` via ${args.via.length} waypoint(s)` : ""}`);
     case "veil_frames": {
       const frames = await p.frames();
       if (!frames.length) return text("(no cross-origin child iframes discovered yet — they're detected as they attach, right after veil_goto)");
