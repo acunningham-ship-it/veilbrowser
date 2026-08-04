@@ -21,6 +21,7 @@ veil-*/
 LAUNCH.md
 examples/demo-record.ts
 LAUNCH_POSTS.md
+LAUNCH_POSTS_v*.md
 examples/endeavor_shot.ts
 examples/rmi_alpage.ts
 examples/amazon_check.ts
