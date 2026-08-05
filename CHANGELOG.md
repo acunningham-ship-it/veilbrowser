@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.0 — 2026-08-05
 
 ### Added
 - **MCP attach mode — `VEIL_CDP_URL`.** The MCP server can now drive a Chrome that is
