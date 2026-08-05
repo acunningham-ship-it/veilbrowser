@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **MCP attach mode — `VEIL_CDP_URL`.** The MCP server can now drive a Chrome that is
+  already running, instead of only launching its own.
+
+  ```jsonc
+  { "env": { "VEIL_CDP_URL": "127.0.0.1:9333" } }
+  ```
+
+  `connect()` has been the library answer since 1.3; the MCP had no equivalent, which meant
+  the one thing agents most need a browser for — a profile a human is signed into — was the
+  one thing the MCP could not do, because Chrome locks the `user-data-dir` and refuses a
+  second instance. Every attempt died with a bare `CDP connection closed`, a message that
+  names a socket and means a profile lock.
+
+  It takes the tab already open rather than adding a blank one. An unreachable endpoint
+  falls back to launching, so a day when nobody started the shared browser degrades the
+  server instead of disabling it, and a launch that then hits the lock says so in words
+  that name the fix.
+
+### Fixed
+- **A dead browser no longer poisons a long-lived MCP server.** The server outlives the
+  Chrome it is attached to; a cached connection to a browser that has since quit rejected
+  every later call with `CDP connection closed` until the server itself was restarted. It
+  now detects the dropped connection and reconnects on the next call.
+  `examples/mcp-attach-check.ts --recovery` covers this end to end (kills the browser
+  mid-session and asserts the next call still works — it fails without the fix).
+
 ## 1.5.0 — 2026-07-27
 
 ### Added

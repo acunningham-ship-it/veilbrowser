@@ -168,6 +168,12 @@ export class CDP {
     }
   }
 
+  /** True once the socket is gone — every send() from here on rejects. Long-lived
+   *  callers (the MCP server) check this to rebuild instead of failing forever. */
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
   close() {
     this.closed = true;
     try {

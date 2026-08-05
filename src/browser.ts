@@ -108,6 +108,13 @@ export class Browser {
     return out;
   }
 
+  /** False once the browser is gone (it quit, or someone closed the socket). Local
+   *  flag, no round trip. A long-lived driver holding a dead Browser otherwise fails
+   *  every call with "CDP connection closed" until the driver itself is restarted. */
+  get connected(): boolean {
+    return !this.cdp.isClosed;
+  }
+
   /** Open a fresh tab and return an initialised Page. */
   async newPage(): Promise<Page> {
     const { targetId } = await this.cdp.send("Target.createTarget", { url: "about:blank" });

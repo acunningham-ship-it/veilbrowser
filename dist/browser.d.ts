@@ -53,6 +53,10 @@ export declare class Browser {
      * and chrome-extension:// targets, which are never what a caller means.
      */
     pages(): Promise<Page[]>;
+    /** False once the browser is gone (it quit, or someone closed the socket). Local
+     *  flag, no round trip. A long-lived driver holding a dead Browser otherwise fails
+     *  every call with "CDP connection closed" until the driver itself is restarted. */
+    get connected(): boolean;
     /** Open a fresh tab and return an initialised Page. */
     newPage(): Promise<Page>;
     close(): Promise<void>;

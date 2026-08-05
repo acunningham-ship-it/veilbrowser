@@ -46,6 +46,9 @@ export declare class CDP {
     }): Promise<any>;
     /** Remove all handlers for a specific sessionId. Called on page close to prevent accumulation. */
     clearHandlers(sessionId: string): void;
+    /** True once the socket is gone — every send() from here on rejects. Long-lived
+     *  callers (the MCP server) check this to rebuild instead of failing forever. */
+    get isClosed(): boolean;
     close(): void;
 }
 export {};

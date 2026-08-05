@@ -10,6 +10,11 @@
  *   bun run src/mcp.ts            # headful (stealthiest)
  *   VEIL_HEADLESS=1 bun run src/mcp.ts
  *   VEIL_USER_DATA_DIR=/path/to/profile bun run src/mcp.ts  # persistent profile
+ *   VEIL_CDP_URL=127.0.0.1:9333 bun run src/mcp.ts          # ATTACH to a running Chrome
+ *
+ * VEIL_CDP_URL takes precedence over launching. Point it at a Chrome you started with
+ * --remote-debugging-port and the server drives the tab already open in it, using
+ * sessions a human signed into by hand. Verify with examples/mcp-attach-check.ts.
  */
 import { createInterface } from "node:readline";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -36,11 +41,66 @@ import type { Page } from "./page.js";
 let browser: Browser | null = null;
 let page: Page | null = null;
 
+/**
+ * ATTACH mode: set VEIL_CDP_URL (e.g. "127.0.0.1:9333") and the server drives the browser a
+ * human already has open and signed in, instead of launching its own.
+ *
+ * Why this exists: launch-only was a real trap. Chrome refuses a second instance on a
+ * user-data-dir that another process holds, so whenever a browser was already open on the
+ * profile, every tool call failed with a bare "CDP connection closed" — which reads like a
+ * network fault and is actually a profile lock. Attaching is also the only way to use a
+ * session a human logged into by hand.
+ */
+async function connectOrLaunch(): Promise<Browser> {
+  const endpoint = process.env.VEIL_CDP_URL;
+  if (endpoint) {
+    try {
+      const b = await Browser.connect(endpoint);
+      process.stderr.write(`[veil-mcp] attached to Chrome at ${endpoint}\n`);
+      return b;
+    } catch (e) {
+      // Unreachable is not fatal: launch our own instead. Making VEIL_CDP_URL a hard
+      // requirement would leave the server dead for every ordinary task on any day
+      // nobody happened to start the shared browser.
+      process.stderr.write(
+        `[veil-mcp] no Chrome at ${endpoint} (${String(e).slice(0, 120)}) — launching one instead\n`,
+      );
+    }
+  }
+  try {
+    return await Browser.launch({
+      headless: process.env.VEIL_HEADLESS === "1",
+      userDataDir: process.env.VEIL_USER_DATA_DIR,
+    });
+  } catch (e) {
+    // The classic version of this failure is a profile lock, whose message says
+    // nothing about profiles. Name the actual fix.
+    throw new Error(
+      `${String(e)}\nIf a Chrome is already open on ${process.env.VEIL_USER_DATA_DIR || "this profile"}, ` +
+        `it holds the lock and a second instance cannot start. Restart that Chrome with ` +
+        `--remote-debugging-port=9333 and set VEIL_CDP_URL=127.0.0.1:9333 to drive it instead.`,
+    );
+  }
+}
+
 async function ensurePage(): Promise<Page> {
-  if (!browser) browser = await Browser.launch({
-    headless: process.env.VEIL_HEADLESS === "1",
-    userDataDir: process.env.VEIL_USER_DATA_DIR,
-  });
+  // A cached Browser whose Chrome has since quit answers every call with
+  // "CDP connection closed" forever. This server outlives the browser it attached to,
+  // so drop a dead one and reconnect rather than making the user restart the server.
+  if (browser && !browser.connected) {
+    browser = null;
+    page = null; // that page belongs to a target that no longer exists
+  }
+  if (!browser) {
+    browser = await connectOrLaunch();
+    if (process.env.VEIL_CDP_URL) {
+      // Attached: drive the tab the human already has open, not a fresh blank one.
+      // ponytail: first tab, which is what the verified publish scripts used. If you
+      // ever attach to a browser with several tabs open, add a picker.
+      const existing = await browser.pages();
+      if (existing.length) page = existing[0];
+    }
+  }
   if (!page) page = await browser.newPage();
   return page;
 }

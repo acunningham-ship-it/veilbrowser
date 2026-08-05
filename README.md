@@ -482,6 +482,41 @@ Local dev alternative (from a checkout, no build step):
 } } }
 ```
 
+### Point it at a browser you already have open
+
+Set `VEIL_CDP_URL` and the server drives an existing Chrome instead of launching its own —
+the MCP counterpart of `Browser.connect()`, and the only way an agent gets at sessions a
+human signed into by hand:
+
+```jsonc
+{ "servers": { "veil": {
+  "command": "npx",
+  "args": ["-y", "-p", "@achamm/veilbrowser", "veil-mcp"],
+  "env": { "VEIL_CDP_URL": "127.0.0.1:9333" }
+} } }
+```
+
+```bash
+google-chrome --user-data-dir=/path/to/profile --remote-debugging-port=9333 about:blank &
+```
+
+It takes the tab that is already open rather than adding a blank one, and if that Chrome is
+unreachable it falls back to launching — an absent browser downgrades the server, it does not
+kill it. **Read the origin-allowlist warning above before attaching an agent to a profile
+that holds your real sessions:** the agent gets the whole cookie jar.
+
+Two failure modes this removes, both of which surface as a bare `CDP connection closed` that
+reads like a network fault:
+
+- **A Chrome already holds the `user-data-dir`.** Chrome refuses a second instance on a
+  locked profile, so the launch path could never work on exactly the profile worth driving.
+- **The browser quits while the server lives on.** A cached connection to a dead Chrome
+  fails every later call until the *server* is restarted. It now notices and reconnects.
+
+```bash
+bun run examples/mcp-attach-check.ts 127.0.0.1:9333 --recovery   # checks both, end to end
+```
+
 ## Testing
 
 ```bash
