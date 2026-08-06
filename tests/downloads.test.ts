@@ -89,4 +89,32 @@ describe.skipIf(!!process.env.CI)("downloads", () => {
     }
     expect(msg).toMatch(/no download completed within 800ms/);
   }, TIMEOUT);
+
+  it("downloadAfter composes enable+trigger+wait without a prior enableDownloads call", async () => {
+    const fresh = await browser.newPage();
+    const freshDir = mkdtempSync(join(tmpdir(), "veil-dl-"));
+    await fresh.goto(dataUrl(PAGE));
+
+    const dl = await fresh.downloadAfter(() => fresh.clickText("Download report").then(() => {}), {
+      dir: freshDir,
+      timeout: 15_000,
+    });
+
+    expect(dl.filename).toBe("report.txt");
+    expect(existsSync(dl.path)).toBe(true);
+    await fresh.close();
+    rmSync(freshDir, { recursive: true, force: true });
+  }, TIMEOUT);
+
+  it("downloadAfter rejects with no dir and no prior enableDownloads", async () => {
+    const fresh = await browser.newPage();
+    let msg = "";
+    try {
+      await fresh.downloadAfter(async () => {});
+    } catch (e: any) {
+      msg = String(e?.message ?? e);
+    }
+    expect(msg).toMatch(/downloadAfter: pass dir/);
+    await fresh.close();
+  }, TIMEOUT);
 });

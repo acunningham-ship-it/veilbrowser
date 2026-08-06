@@ -161,6 +161,10 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"] } },
   { name: "veil_get_cookies", description: "Return the browser's current cookies as JSON (name, value, domain, path, expires, httpOnly, secure, sameSite, ...). Symmetric with cookie injection. Optionally pass `urls` to scope the read to specific origins.",
     inputSchema: { type: "object", properties: { urls: { type: "array", items: { type: "string" }, description: "origins to scope the read to (default: the page's current frames)" } } } },
+  { name: "veil_enable_downloads", description: "Opt the page into downloads and send them to `dir` — Chrome under CDP cancels downloads by default, so clicking an export/report/invoice link does nothing and reports nothing until this is called. Call once, before the click that triggers the download. `dir` must be an absolute path that already exists.",
+    inputSchema: { type: "object", properties: { dir: { type: "string", description: "absolute directory path (must already exist)" } }, required: ["dir"] } },
+  { name: "veil_wait_for_download", description: "Wait for the next download to finish and return { filename, path, url }. Call AFTER the click that starts it — downloads are tracked from veil_enable_downloads onward, so a download that finishes before you call this is still returned, not lost. Rejects on a Chrome-cancelled download or on timeout. Requires veil_enable_downloads first.",
+    inputSchema: { type: "object", properties: { timeout: { type: "number", description: "ms before giving up (default 30000)" } } } },
   { name: "veil_upload", description: "Attach local files to a file <input> (even a hidden one) without an OS file picker. Paths must be absolute. selector defaults to the first input[type=file]; pass a specific one if the page has several.",
     inputSchema: { type: "object", properties: { paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, selector: { type: "string", description: "CSS selector for the file input (default input[type=\"file\"])" } }, required: ["paths"] } },
   { name: "veil_upload_via_picker", description: "Attach files through a control that opens a file picker (SPAs like Gemini that create the <input> lazily on click). Pass the snapshot ref of the trigger element and absolute file paths.",
@@ -287,6 +291,13 @@ async function callTool(name: string, args: any): Promise<any> {
       return text(`clicked at (${args.x}, ${args.y})`);
     case "veil_get_cookies":
       return text(JSON.stringify(await p.getCookies(args.urls), null, 2));
+    case "veil_enable_downloads":
+      await p.enableDownloads(args.dir);
+      return text(`downloads enabled -> ${args.dir}`);
+    case "veil_wait_for_download": {
+      const d = await p.waitForDownload({ timeout: args.timeout });
+      return text(JSON.stringify(d, null, 2));
+    }
     case "veil_upload":
       await p.uploadFile(args.paths, args.selector);
       return text(`uploaded ${args.paths.length} file(s)`);

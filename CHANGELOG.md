@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Download capture reachable from MCP — `veil_enable_downloads` / `veil_wait_for_download`.**
+  `Page.enableDownloads()`/`waitForDownload()` existed in the library since downloads shipped,
+  but had no MCP wrapper — an MCP-only agent had no way to catch a download at all. Wired
+  straight through to the existing primitives.
+- **`Page.downloadAfter(trigger, opts)`** — composes enableDownloads + a trigger action +
+  waitForDownload in one call, in the order that avoids the finish-before-you-await race.
+  Agents driving heavy SPAs (Ancestry, GEDCOM exports) were hand-rolling this exact three-step
+  sequence per site; this is the reusable version.
+
 ## 1.6.0 — 2026-08-05
 
 ### Added

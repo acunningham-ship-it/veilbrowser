@@ -446,14 +446,32 @@ We test before we claim.
 ## Use from an AI agent (MCP)
 
 Veil ships an MCP server (`src/mcp.ts`) — already wired into **persoje**
-(`~/.config/persoje/mcp.json`), exposing 33 tools: `goto`, `reload`, `back`, `forward`,
-`snapshot`, `click`, `fill`, `type`, `select`, `press`, `scroll`, `set_viewport`,
-`set_user_agent`, `set_fingerprint`, `block_resources`, `unblock_resources`, `wait_for`, `wait_for_selector`,
-`click_at`, `get_cookies`, `text`, `attribute`, `screenshot`, `eval`, `upload`,
-`upload_via_picker`, `pdf`, `fedcm_enable`, `fedcm_signin`, `drag`, `frames`, `use_frame`,
-`close`. Tool-execution failures come
+(`~/.config/persoje/mcp.json`), exposing 40 tools: `goto`, `reload`, `back`, `forward`,
+`snapshot`, `dom`, `click`, `click_text`, `click_at`, `double_click`, `right_click`, `fill`,
+`fill_text`, `type`, `select`, `press`, `scroll`, `set_viewport`, `set_user_agent`,
+`set_fingerprint`, `block_resources`, `unblock_resources`, `wait_for`, `wait_for_selector`,
+`get_cookies`, `text`, `attribute`, `screenshot`, `eval`, `upload`, `upload_via_picker`,
+`enable_downloads`, `wait_for_download`, `pdf`, `fedcm_enable`, `fedcm_signin`, `drag`,
+`frames`, `use_frame`, `close`. Tool-execution failures come
 back as `isError` results (the model reads and self-corrects) rather than JSON-RPC errors.
 Verified end-to-end through persoje's own MCP client (discover → goto → snapshot). Any MCP host works.
+
+### Driving a heavy/virtualized SPA (Ancestry, Notion, Figma-style editors)
+
+`veil_snapshot` walks the accessibility tree and can stall or time out on a big virtualized
+page. Don't hand-roll a workaround per site — three tools already solve the pieces:
+
+- **Find and click without a snapshot ref:** `veil_click_text` (or `veil_dom` first if you
+  need to see what's there) — one in-page pass that pierces shadow DOM, scrolls the match
+  into view, and does a TRUSTED click at freshly-read coordinates. This is what replaced the
+  original ad-hoc `evaluate(getBoundingClientRect) → click_at` dance.
+- **Wait for the page to catch up:** `veil_wait_for` (poll a JS expression) or
+  `veil_wait_for_selector` (poll a CSS selector, optionally `visible:true`) — a patient wait
+  instead of a fixed sleep.
+- **Capture a download it triggers:** `veil_enable_downloads` once, then click, then
+  `veil_wait_for_download` — Chrome under CDP silently cancels downloads otherwise. Driving
+  from a script instead of MCP? `Page.downloadAfter(trigger, {dir})` composes all three calls
+  in the order that avoids the finish-before-you-await race.
 
 The package ships a `veil-mcp` bin, so an installed user can launch the server without a
 checkout — copy-pasteable into any MCP host:
