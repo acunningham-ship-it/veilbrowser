@@ -60,7 +60,26 @@ export class Browser {
         let wsUrl = endpoint;
         if (!/^wss?:\/\//i.test(endpoint)) {
             const origin = /^https?:\/\//i.test(endpoint) ? endpoint : `http://${endpoint}`;
-            const res = await fetch(`${origin.replace(/\/+$/, "")}/json/version`);
+            // ⛔ This fetch MUST be bounded. A wedged Chrome still holds the port open and still
+            // completes the TCP handshake, it just never answers — so an unbounded fetch here
+            // hangs the caller forever instead of failing. That is strictly worse than a dead
+            // port, because a caller with a launch fallback never reaches it: it waits on a
+            // browser that is never going to reply. Measured 2026-08-06 — the morning scrape
+            // cron sat here until its own 300s timeout killed it, twice, having printed nothing
+            // at all, which made it look like the scrape was slow rather than the connect stuck.
+            const timeoutMs = opts.timeoutMs ?? 10_000;
+            let res;
+            try {
+                res = await fetch(`${origin.replace(/\/+$/, "")}/json/version`, {
+                    signal: AbortSignal.timeout(timeoutMs),
+                });
+            }
+            catch (e) {
+                const why = e?.name === "TimeoutError" || e?.name === "AbortError"
+                    ? `did not respond within ${timeoutMs}ms — the port is open but the browser is wedged, so restart it`
+                    : `is not reachable (${e?.message || e})`;
+                throw new Error(`Browser.connect: ${origin}/json/version ${why}.`);
+            }
             if (!res.ok) {
                 throw new Error(`Browser.connect: ${origin}/json/version returned ${res.status}. ` +
                     `Is Chrome running with --remote-debugging-port, and is the port right?`);

@@ -44,6 +44,7 @@ export declare class Browser {
         blockPrivateNetwork?: boolean;
         allowOrigins?: string[];
         fingerprint?: Fingerprint;
+        timeoutMs?: number;
     }): Promise<Browser>;
     /**
      * The tabs that already exist, as initialised Pages.

@@ -658,6 +658,21 @@ export declare class Page {
         path: string;
         url: string;
     }>;
+    /**
+     * enableDownloads + trigger + waitForDownload, in the right order, in one call —
+     * the sequence agents were hand-rolling for every export/report button on a heavy
+     * SPA (Ancestry, GEDCOM tools). `dir` is only required the first time on this page;
+     * pass it again to switch directories. `trigger` runs after downloads are armed, so
+     * a download that finishes before the trigger's own promise resolves still isn't lost.
+     */
+    downloadAfter(trigger: () => Promise<unknown>, opts?: {
+        dir?: string;
+        timeout?: number;
+    }): Promise<{
+        filename: string;
+        path: string;
+        url: string;
+    }>;
     /** Wire the Browser download events once, at init. */
     private trackDownloads;
     /**
