@@ -579,6 +579,19 @@ Unit tests cover:
 - [ ] Response-body capture; session persistence & profile warm-up
 - [ ] Per-tab concurrency (many tabs, one socket — transport already supports it)
 
+## Who builds this
+
+Veil is built and maintained by **[HamTek](https://hamtek.dev)**.
+
+We build it because we need it. Our own agents drive real browsers all day — posting,
+scraping, filling in forms on sites that actively look for automation. The standard
+tools announce themselves (see the table above), so we wrote the layer that doesn't.
+Veil is what we run in production, every day.
+
+That's also the work we do for other people: agents that hold up once real users get
+to them, not just in the demo. If that's the problem you have, we're at
+[hamtek.dev](https://hamtek.dev).
+
 ## License
 
 MIT.

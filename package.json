@@ -50,7 +50,7 @@
   "bugs": {
     "url": "https://github.com/acunningham-ship-it/veilbrowser/issues"
   },
-  "author": "Armani Cunningham <acunningham@crazeemedia.com>",
+  "author": "Armani Cunningham <acunningham@crazeemedia.com> (https://hamtek.dev)",
   "engines": {
     "node": ">=24.0.0",
     "bun": ">=1.0.0"
