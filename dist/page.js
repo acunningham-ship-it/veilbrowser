@@ -888,6 +888,13 @@ export class Page {
      * used to be. Returns the element (fresh center coords) or null.
      */
     async locateText(query, opts = {}) {
+        if (typeof query !== "string" || !query.trim()) {
+            // Fails loudly at the boundary instead of a cryptic "query.toLowerCase() of
+            // undefined" — the real cause is almost always a caller passing the wrong
+            // param name (e.g. `text` instead of `query`), which the MCP layer doesn't
+            // validate before the handler runs.
+            throw new Error(`locateText: "query" must be a non-empty string, got ${JSON.stringify(query)}`);
+        }
         const spec = {
             q: query.toLowerCase().replace(/\s+/g, " ").trim(),
             exact: !!opts.exact,

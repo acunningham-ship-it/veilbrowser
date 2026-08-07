@@ -171,8 +171,8 @@ const TOOLS = [
         inputSchema: { type: "object", properties: { ref: { type: "number" } }, required: ["ref"] } },
     { name: "veil_attribute", description: "Read one attribute of an element by snapshot ref (e.g. href, value, aria-label, a data-* attribute). Returns the raw string, or null if absent.",
         inputSchema: { type: "object", properties: { ref: { type: "number" }, name: { type: "string" } }, required: ["ref", "name"] } },
-    { name: "veil_screenshot", description: "Capture a PNG screenshot (returned as an image for vision). Default is the current viewport. Pass a snapshot `ref` to shoot just that element's bounding box, `clip` for an explicit {x,y,width,height} page rectangle, or `fullPage:true` for the whole scrollable page.",
-        inputSchema: { type: "object", properties: { ref: { type: "number", description: "snapshot ref — shoot just this element" }, fullPage: { type: "boolean", description: "capture the whole scrollable page" }, clip: { type: "object", description: "explicit page-coordinate rectangle", properties: { x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }, required: ["x", "y", "width", "height"] } } } },
+    { name: "veil_screenshot", description: "Capture a PNG screenshot. Default returns it as an image for vision. Pass `path` to save the PNG to disk and return the saved path instead of the image — use this to capture frames / B-roll as files without dumping the image into context. Pass a snapshot `ref` to shoot just that element's bounding box, `clip` for an explicit {x,y,width,height} page rectangle, or `fullPage:true` for the whole scrollable page.",
+        inputSchema: { type: "object", properties: { path: { type: "string", description: "save the PNG here (absolute path) and return the path, instead of returning the image for vision" }, ref: { type: "number", description: "snapshot ref — shoot just this element" }, fullPage: { type: "boolean", description: "capture the whole scrollable page" }, clip: { type: "object", description: "explicit page-coordinate rectangle", properties: { x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" } }, required: ["x", "y", "width", "height"] } } } },
     { name: "veil_eval", description: "Evaluate a JS expression in the page and return the value.",
         inputSchema: { type: "object", properties: { expression: { type: "string" } }, required: ["expression"] } },
     { name: "veil_pdf", description: "Render the current page to a PDF and save it to disk — Chrome prints PDF in HEADLESS mode only (VEIL_HEADLESS=1). Pass `path` for the output file, or omit to write a temp file; returns the saved path. Options: landscape, printBackground (default true), scale, pageRanges.",
@@ -321,6 +321,10 @@ async function callTool(name, args) {
         }
         case "veil_screenshot": {
             const png = await p.screenshot({ ref: args.ref, fullPage: args.fullPage, clip: args.clip });
+            if (args.path) {
+                writeFileSync(args.path, png);
+                return text(`saved screenshot (${png.length} bytes) to ${args.path}`);
+            }
             return { content: [{ type: "image", data: png.toString("base64"), mimeType: "image/png" }] };
         }
         case "veil_eval":
