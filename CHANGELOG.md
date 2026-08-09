@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.1 — 2026-08-09
 
 ### Added
 - **Download capture reachable from MCP — `veil_enable_downloads` / `veil_wait_for_download`.**
@@ -11,6 +11,28 @@
   waitForDownload in one call, in the order that avoids the finish-before-you-await race.
   Agents driving heavy SPAs (Ancestry, GEDCOM exports) were hand-rolling this exact three-step
   sequence per site; this is the reusable version.
+- **`veil_screenshot` can save to disk via optional `path`.** Mirrors `veil_pdf` — write the PNG
+  to a file and get the saved path back instead of a base64 image in context. Omitting `path`
+  keeps the old vision-image behaviour.
+
+### Fixed
+- **`connect()` no longer hangs forever on a wedged browser.** A wedged Chrome completes the TCP
+  handshake and holds its debug port open, it just never answers — the `/json/version` fetch had
+  no timeout, so a caller waited indefinitely instead of falling back to launching its own. Bounded
+  at 10s by default (`opts.timeoutMs`); a silent port now reads as "restart the browser," a closed
+  port as "not reachable."
+- **`locateText` fails loudly on a missing/wrong `query` param** instead of a cryptic
+  `toLowerCase` crash four layers deep in injected page JS. Both `clickText` and `fillText` route
+  through it. (`findText` is confirmed dead code — nothing calls it.)
+
+### Changed
+- **Attribution to HamTek, published for the first time.** A "Who builds this" section (why we
+  built veil, what HamTek does) and an `author` credit landed on `main` two days ago but were
+  never released — the npm README has carried none of it since. This release finally ships it,
+  plus a shorter "Built by HamTek" line up top near the badges (the part a npm-page skimmer
+  actually sees) and `homepage` pointed at [hamtek.dev/veil](https://hamtek.dev/veil) instead of
+  the bare GitHub readme anchor — the npm package page was the one HamTek surface with real traffic
+  (1,426 installs/mo) and zero attribution.
 
 ## 1.6.0 — 2026-08-05
 

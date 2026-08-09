@@ -4,6 +4,8 @@
 
 [![npm](https://img.shields.io/npm/v/@achamm/veilbrowser?color=cb3837&logo=npm)](https://www.npmjs.com/package/@achamm/veilbrowser) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg) ![TypeScript native](https://img.shields.io/badge/TypeScript-native-3178c6.svg?logo=typescript&logoColor=white)
 
+Built by **[HamTek](https://hamtek.dev/veil)** — we build production-grade AI agents; veil is the proof.
+
 ![Veil passing bot.sannysoft.com and Cloudflare's challenge](assets/demo.gif)
 
 *Veil driving real Chrome: bot.sannysoft.com all-green, then straight through Cloudflare's JS challenge — no patches, no plugins.*
