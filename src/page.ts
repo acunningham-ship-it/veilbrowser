@@ -239,6 +239,18 @@ const SYMBOL_KEYS: Record<string, { code: string; vk: number }> = {
 const SHIFTED_SYMBOLS = new Set('~!@#$%^&*()_+{}|:"<>?'.split(""));
 
 /**
+ * Build the combo string press() expects ("Control+a") from a bare key plus an
+ * optional modifiers array — the MCP layer's `veil_press` tool takes them as two
+ * separate params (`key`, `modifiers`), but press()'s own chord parsing only
+ * understands them pre-joined with "+". Pure and tiny on purpose: this used to be
+ * inlined at the one call site and the modifiers array was silently never read,
+ * so a held Control/Alt/Meta/Shift never reached the page at all.
+ */
+export function pressCombo(key: string, modifiers?: string[]): string {
+  return modifiers && modifiers.length ? `${modifiers.join("+")}+${key}` : key;
+}
+
+/**
  * Resolve one character to a well-formed keystroke: the DOM `key`, the physical
  * `code`, the legacy `windowsVirtualKeyCode` (`vk`), the `text` to commit, and
  * whether the character needs the `shift` modifier held.
@@ -605,7 +617,7 @@ export class Page {
   async goto(
     url: string,
     opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {},
-  ): Promise<{ url: string; status?: number; ok?: boolean }> {
+  ): Promise<{ url: string; status?: number; ok?: boolean; timedOutWaitingForLoad?: boolean }> {
     this.resetRefs();
     this.recentResponses = [];
     this.activeSessionId = this.sessionId;
@@ -622,6 +634,7 @@ export class Page {
     );
     let loaderId: string | undefined;
     let offWithin: (() => void) | undefined;
+    let timedOutWaitingForLoad = false;
     try {
       // Arm the waiter BEFORE navigating: we can't miss loadEventFired, and a
       // networkidle waiter is already counting the navigation's own requests.
@@ -657,8 +670,24 @@ export class Page {
       // Whichever signal arrives first wins. On a same-document navigation the load
       // waiter will never settle, so swallow it — otherwise it surfaces as an
       // unhandled rejection long after goto() has already returned successfully.
-      const how = await Promise.race([waiter.then(() => "loaded" as const), withinDoc]);
-      if (how === "within") waiter.catch(() => {});
+      try {
+        const how = await Promise.race([waiter.then(() => "loaded" as const), withinDoc]);
+        if (how === "within") waiter.catch(() => {});
+      } catch (err) {
+        // Page.loadEventFired never fired within the timeout — measured as routine
+        // on Instagram, TikTok, Facebook, YouTube Studio, and plenty of ordinary CMS
+        // sites (a persistent analytics/chat/long-poll connection can keep the
+        // browser's notion of "loading" open long after the document is actually
+        // interactive). This was previously a thrown exception on every one of
+        // those, which trained every caller to catch-and-ignore goto() errors —
+        // exactly when a REAL navigation failure needs to be noticed. So: only
+        // swallow THIS specific, identified timeout, and only after confirming the
+        // DOM actually landed; anything else still throws.
+        if (!/Timed out waiting for Page\.loadEventFired/.test(String((err as any)?.message ?? err))) throw err;
+        const ready = await this.evaluate<string>("document.readyState").catch(() => "");
+        if (ready !== "complete" && ready !== "interactive") throw err; // genuinely never loaded — still a real error
+        timedOutWaitingForLoad = true;
+      }
     } finally {
       offWithin?.();
       offResp();
@@ -667,7 +696,10 @@ export class Page {
     // status stays undefined only when no Document response is observed for this
     // loaderId (e.g. about:blank) — additive, so callers that ignore it are fine.
     const status = loaderId ? docStatus.get(loaderId) : undefined;
-    return { url, status, ok: status == null ? undefined : status >= 200 && status < 400 };
+    return {
+      url, status, ok: status == null ? undefined : status >= 200 && status < 400,
+      ...(timedOutWaitingForLoad ? { timedOutWaitingForLoad: true } : {}),
+    };
   }
 
   /** Reload the current page (Page.reload), waiting per `waitUntil`. */
@@ -1415,7 +1447,9 @@ export class Page {
 
   /** Clear the focused field: select-all (Ctrl+A) then Delete, via the Input
    *  domain like the rest of our key dispatch. Playwright's fill() clears first;
-   *  without this, filling a pre-populated input yields "oldnewvalue". */
+   *  without this, filling a pre-populated input yields "oldnewvalue". Shared by
+   *  the public fill() and clear() — both need a real keystroke here, not
+   *  execCommand, which some sites' own JS silently reverts. */
   private async clearField() {
     await this.sendKey({ key: "a", code: "KeyA", vk: 65, modifiers: 2 }); // Ctrl+A → select all
     await this.sendKey({ key: "Delete", code: "Delete", vk: 46 });        // delete the selection
@@ -1438,6 +1472,39 @@ export class Page {
    *    and this is where that shows up as an error instead of as lost text.
    */
   async fill(ref: number, text: string) {
+    await this.checkEditable(ref, "fill", "nothing was typed");
+    await this.focusRef(ref, "fill", "nothing was typed");
+    await this.clearField();
+    await this.type(text);
+  }
+
+  /** Empty a field (input, textarea, or contenteditable) by ref: click it, then
+   *  select-all + Delete via the same real Input-domain key dispatch fill() already
+   *  relies on — NOT document.execCommand, which some sites' own JS silently
+   *  reverts (a real keystroke is indistinguishable from a human's to the page).
+   *  Returns the resulting text length so the caller can assert the field is
+   *  actually empty instead of trusting the tool's own return value. */
+  async clear(ref: number): Promise<number> {
+    await this.checkEditable(ref, "clear", "nothing was changed");
+    await this.focusRef(ref, "clear", "nothing was changed");
+    await this.clearField();
+    return this.callOnRef<number>(
+      ref,
+      `function(){
+        const t = this.tagName;
+        if (t === "INPUT" || t === "TEXTAREA") return this.value.length;
+        // textContent, not innerText: Chromium leaves a lone placeholder <br> in a
+        // just-cleared contenteditable, and innerText reads that as "\\n" (length
+        // 1) — a false "not actually empty" right after the clear that produced it.
+        return (this.textContent || "").length;
+      }`,
+    );
+  }
+
+  /** Shared by fill()/clear(): refuse a ref that can't take text at all (disabled,
+   *  readonly, or simply not a field) before either one touches the page — a bad
+   *  ref could otherwise clobber whatever the document selection currently holds. */
+  private async checkEditable(ref: number, caller: string, consequence: string) {
     const state = await this.callOnRef<{ ok: boolean; why: string }>(
       ref,
       `function(){
@@ -1449,14 +1516,21 @@ export class Page {
         return { ok:true, why:"" };
       }`,
     );
-    if (!state.ok) throw new Error(`fill: ref ${ref} — ${state.why}. Nothing was typed.`);
+    if (!state.ok) throw new Error(`${caller}: ref ${ref} — ${state.why}. ${consequence}.`);
+  }
 
+  /** Shared by fill()/clear(): click a ref and confirm focus actually landed there
+   *  before doing anything destructive to the current selection — every step after
+   *  the click is a BLIND keyboard dispatch to whatever currently holds focus. A
+   *  cookie banner, modal, or sticky header covering the field swallows the click,
+   *  and this is where that shows up as an error instead of as lost/mangled text.
+   *
+   *  document.activeElement stops at a shadow HOST — inside a web component it
+   *  returns the host, never the field. Descend through shadow roots or every
+   *  shadow-DOM fill/clear reads as "focus didn't land". */
+  private async focusRef(ref: number, caller: string, consequence: string) {
     await this.click(ref);
     await sleep(this.rng.range(60, 160));
-
-    // document.activeElement stops at a shadow HOST — inside a web component it
-    // returns the host, never the field. Descend through shadow roots or every
-    // shadow-DOM fill reads as "focus didn't land".
     const focused = await this.callOnRef<boolean>(
       ref,
       `function(){
@@ -1467,13 +1541,10 @@ export class Page {
     );
     if (!focused) {
       throw new Error(
-        `fill: ref ${ref} — the click did not put focus in the field, so nothing was typed. ` +
+        `${caller}: ref ${ref} — the click did not put focus in the field, so ${consequence}. ` +
           `Something is probably covering it (cookie banner, modal, sticky header).`,
       );
     }
-
-    await this.clearField();
-    await this.type(text);
   }
 
   /** Resolve a snapshot ref to a live JS object handle (objectId) — the bridge

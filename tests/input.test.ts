@@ -10,7 +10,20 @@
  * Run with: bun test tests/input.test.ts
  */
 import { describe, it, expect } from "bun:test";
-import { keyInfo } from "../src/page.js";
+import { keyInfo, pressCombo } from "../src/page.js";
+
+describe("pressCombo — veil_press's key+modifiers → press()'s chord string", () => {
+  it("no modifiers passes the bare key through unchanged", () => {
+    expect(pressCombo("a")).toBe("a");
+    expect(pressCombo("a", [])).toBe("a");
+  });
+  it("one modifier joins with '+' — the bug: this used to be silently dropped", () => {
+    expect(pressCombo("a", ["Control"])).toBe("Control+a");
+  });
+  it("stacks multiple modifiers in the order given", () => {
+    expect(pressCombo("k", ["Control", "Shift"])).toBe("Control+Shift+k");
+  });
+});
 
 describe("keyInfo — letters", () => {
   it("lowercase 'a' → KeyA / vk 65, no shift", () => {

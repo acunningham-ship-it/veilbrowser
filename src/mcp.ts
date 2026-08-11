@@ -37,6 +37,7 @@ const VERSION: string = (() => {
 import { Browser } from "./browser.js";
 import { PRESETS, Fingerprint } from "./fingerprint.js";
 import type { Page } from "./page.js";
+import { pressCombo } from "./page.js";
 
 let browser: Browser | null = null;
 let page: Page | null = null;
@@ -134,8 +135,10 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
   { name: "veil_select", description: "Set a <select> dropdown (by snapshot ref) to a value and fire input+change — the reliable way to drive a native <select>, which click+type can't. Value matches an option's value, then its visible label/text.",
     inputSchema: { type: "object", properties: { ref: { type: "number" }, value: { type: "string" } }, required: ["ref", "value"] } },
-  { name: "veil_press", description: "Press a single named key on the focused element. Use 'Enter' to submit a search box or form (fill a field, then veil_press Enter). Supported: Enter, Tab, Escape, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown.",
-    inputSchema: { type: "object", properties: { key: { type: "string", enum: ["Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"] } }, required: ["key"] } },
+  { name: "veil_press", description: "Press a key (or key combo) on the focused element. Named keys: Enter, Tab, Escape, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown — or any single character. Use 'Enter' to submit a search box or form (fill a field, then veil_press Enter). Pass modifiers (e.g. modifiers:['Control'], key:'a' for select-all) to hold Alt/Control/Meta/Shift while the key is pressed — a held Control/Alt/Meta sends the chord only, it will NOT also type the bare character.",
+    inputSchema: { type: "object", properties: { key: { type: "string", description: "A named key, or a single character." }, modifiers: { type: "array", items: { type: "string", enum: ["Alt", "Control", "Meta", "Shift"] }, description: "Held while key is pressed." } }, required: ["key"] } },
+  { name: "veil_clear", description: "Empty a field — input, textarea, or contenteditable — by ref (from snapshot). Selects all then deletes via real key dispatch (not execCommand, which some sites' JS silently reverts) and returns the resulting text length so you can assert it's actually empty before typing into it.",
+    inputSchema: { type: "object", properties: { ref: { type: "number" } }, required: ["ref"] } },
   { name: "veil_scroll", description: "Scroll the page by a pixel delta via a real mouse-wheel event (positive dy scrolls down, positive dx scrolls right). Reveals lazy-loaded / off-screen content; re-run veil_snapshot after. Pass ctrl:true to zoom instead of pan/scroll — infinite-canvas editors (n8n's workflow canvas, most GHL/Webflow-style builders) branch zoom-vs-pan on the Ctrl modifier bit, same as a trackpad pinch.",
     inputSchema: { type: "object", properties: { dx: { type: "number", description: "horizontal pixels (default 0)" }, dy: { type: "number", description: "vertical pixels (positive = down); negative = zoom in when ctrl:true" }, ctrl: { type: "boolean", description: "hold Ctrl — zoom instead of pan on canvas editors" } }, required: ["dy"] } },
   { name: "veil_set_viewport", description: "Set the viewport size (and optional deviceScaleFactor / mobile emulation) — the page sees this as window.innerWidth/Height, screen size, and devicePixelRatio. Emulate a phone or force a fixed desktop size for reproducible screenshots.",
@@ -249,9 +252,15 @@ async function callTool(name: string, args: any): Promise<any> {
     case "veil_type":
       await p.type(args.text);
       return text(`typed ${args.text.length} chars`);
-    case "veil_press":
-      await p.press(args.key);
-      return text(`pressed ${args.key}`);
+    case "veil_press": {
+      const combo = pressCombo(args.key, args.modifiers);
+      await p.press(combo);
+      return text(`pressed ${combo}`);
+    }
+    case "veil_clear": {
+      const len = await p.clear(args.ref);
+      return text(`cleared [${args.ref}] (length now ${len})`);
+    }
     case "veil_select":
       return text(`set <select> [${args.ref}] to ${JSON.stringify(await p.select(args.ref, args.value))}`);
     case "veil_scroll":
