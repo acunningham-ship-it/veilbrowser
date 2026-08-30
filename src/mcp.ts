@@ -129,7 +129,7 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { ref: { type: "number" }, x: { type: "number" }, y: { type: "number" } } } },
   { name: "veil_right_click", description: "Right-click an element (by ref) or absolute viewport coords to open a context menu — n8n's canvas 'add node here' menu, a node's duplicate/delete/pin menu, or GHL's element menu. Read the menu with veil_snapshot/veil_dom afterward and click the option normally.",
     inputSchema: { type: "object", properties: { ref: { type: "number" }, x: { type: "number" }, y: { type: "number" } } } },
-  { name: "veil_fill", description: "Click a field by ref and type text into it (human cadence).",
+  { name: "veil_fill", description: "Click a field by ref and set its text. Instant for <input>/<textarea> (native value-setter commit, framework-safe — React/Vue controlled fields see a real change, not just a DOM value) regardless of length. Falls back to real per-character keystrokes only for contenteditable, which has no value property to set.",
     inputSchema: { type: "object", properties: { ref: { type: "number" }, text: { type: "string" } }, required: ["ref", "text"] } },
   { name: "veil_type", description: "Type text into the currently focused element.",
     inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },

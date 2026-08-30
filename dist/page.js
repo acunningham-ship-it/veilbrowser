@@ -176,6 +176,17 @@ const SYMBOL_KEYS = {
  */
 const SHIFTED_SYMBOLS = new Set('~!@#$%^&*()_+{}|:"<>?'.split(""));
 /**
+ * Build the combo string press() expects ("Control+a") from a bare key plus an
+ * optional modifiers array — the MCP layer's `veil_press` tool takes them as two
+ * separate params (`key`, `modifiers`), but press()'s own chord parsing only
+ * understands them pre-joined with "+". Pure and tiny on purpose: this used to be
+ * inlined at the one call site and the modifiers array was silently never read,
+ * so a held Control/Alt/Meta/Shift never reached the page at all.
+ */
+export function pressCombo(key, modifiers) {
+    return modifiers && modifiers.length ? `${modifiers.join("+")}+${key}` : key;
+}
+/**
  * Resolve one character to a well-formed keystroke: the DOM `key`, the physical
  * `code`, the legacy `windowsVirtualKeyCode` (`vk`), the `text` to commit, and
  * whether the character needs the `shift` modifier held.
@@ -539,6 +550,7 @@ export class Page {
             docStatus.set(p.loaderId, p.response?.status); }, this.sessionId);
         let loaderId;
         let offWithin;
+        let timedOutWaitingForLoad = false;
         try {
             // Arm the waiter BEFORE navigating: we can't miss loadEventFired, and a
             // networkidle waiter is already counting the navigation's own requests.
@@ -570,9 +582,28 @@ export class Page {
             // Whichever signal arrives first wins. On a same-document navigation the load
             // waiter will never settle, so swallow it — otherwise it surfaces as an
             // unhandled rejection long after goto() has already returned successfully.
-            const how = await Promise.race([waiter.then(() => "loaded"), withinDoc]);
-            if (how === "within")
-                waiter.catch(() => { });
+            try {
+                const how = await Promise.race([waiter.then(() => "loaded"), withinDoc]);
+                if (how === "within")
+                    waiter.catch(() => { });
+            }
+            catch (err) {
+                // Page.loadEventFired never fired within the timeout — measured as routine
+                // on Instagram, TikTok, Facebook, YouTube Studio, and plenty of ordinary CMS
+                // sites (a persistent analytics/chat/long-poll connection can keep the
+                // browser's notion of "loading" open long after the document is actually
+                // interactive). This was previously a thrown exception on every one of
+                // those, which trained every caller to catch-and-ignore goto() errors —
+                // exactly when a REAL navigation failure needs to be noticed. So: only
+                // swallow THIS specific, identified timeout, and only after confirming the
+                // DOM actually landed; anything else still throws.
+                if (!/Timed out waiting for Page\.loadEventFired/.test(String(err?.message ?? err)))
+                    throw err;
+                const ready = await this.evaluate("document.readyState").catch(() => "");
+                if (ready !== "complete" && ready !== "interactive")
+                    throw err; // genuinely never loaded — still a real error
+                timedOutWaitingForLoad = true;
+            }
         }
         finally {
             offWithin?.();
@@ -582,7 +613,10 @@ export class Page {
         // status stays undefined only when no Document response is observed for this
         // loaderId (e.g. about:blank) — additive, so callers that ignore it are fine.
         const status = loaderId ? docStatus.get(loaderId) : undefined;
-        return { url, status, ok: status == null ? undefined : status >= 200 && status < 400 };
+        return {
+            url, status, ok: status == null ? undefined : status >= 200 && status < 400,
+            ...(timedOutWaitingForLoad ? { timedOutWaitingForLoad: true } : {}),
+        };
     }
     /** Reload the current page (Page.reload), waiting per `waitUntil`. */
     async reload(opts = {}) {
@@ -975,8 +1009,14 @@ export class Page {
     }
     /**
      * Focus an editable field matched by its label/placeholder/aria text (scrolled
-     * into view first), clear it (Ctrl+A) and type `value`. The snapshot-free analogue
-     * of fill(ref, text). Throws if no editable field matches. Returns the field.
+     * into view first) and set `value`. The snapshot-free analogue of fill(ref,
+     * text) — same native-setter + _valueTracker-reset fast path (2026-08-29,
+     * judge #7702) for <input>/<textarea>, since fillText has no snapshot ref to
+     * drive callOnRef with: it operates on document.activeElement right after
+     * the click, and checks the click actually landed on a native field before
+     * trusting that. contenteditable has no .value/tracker, so it still falls
+     * back to real keystrokes. Throws if no editable field matches. Returns the
+     * field.
      */
     async fillText(query, value, opts = {}) {
         const el = await this.locateText(query, { nth: opts.nth, editableOnly: true });
@@ -985,8 +1025,33 @@ export class Page {
         await sleep(this.rng.range(280, 460)); // let scroll settle
         await this.clickAt(el.x, el.y);
         await sleep(this.rng.range(40, 90));
-        await this.sendKey({ key: "a", code: "KeyA", vk: 65, modifiers: 2 }); // Ctrl+A select-all
-        await this.type(value);
+        if (el.tag === "input" || el.tag === "textarea") {
+            // value travels via JSON.stringify into the expression string, not a raw
+            // template interpolation of the RAW characters into veil's own source —
+            // JSON.stringify always emits a syntactically valid, correctly-escaped
+            // JS string literal, so this doesn't hit the bun non-ASCII source-escaping
+            // bug that motivated passing text as a real callFunctionOn argument in
+            // fill(ref, ...) (that bug is about bun mis-transpiling literal non-ASCII
+            // in *veil's own* .ts source, not about a JSON-escaped runtime string).
+            await this.evaluate(`(function(){
+        const el = document.activeElement;
+        if (!el || (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA")) {
+          throw new Error("fillText: focus did not land on the target field — a cookie banner, modal, or sticky header may be covering it");
+        }
+        const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+        const prevValue = el.value;
+        setter.call(el, ${JSON.stringify(value)});
+        const tracker = el._valueTracker;
+        if (tracker) tracker.setValue(prevValue);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      })()`);
+        }
+        else {
+            await this.sendKey({ key: "a", code: "KeyA", vk: 65, modifiers: 2 }); // Ctrl+A select-all
+            await this.type(value);
+        }
         return el;
     }
     /** Move the cursor along a human curve to a target point. `buttons` mirrors
@@ -1283,7 +1348,9 @@ export class Page {
     }
     /** Clear the focused field: select-all (Ctrl+A) then Delete, via the Input
      *  domain like the rest of our key dispatch. Playwright's fill() clears first;
-     *  without this, filling a pre-populated input yields "oldnewvalue". */
+     *  without this, filling a pre-populated input yields "oldnewvalue". Shared by
+     *  the public fill() and clear() — both need a real keystroke here, not
+     *  execCommand, which some sites' own JS silently reverts. */
     async clearField() {
         await this.sendKey({ key: "a", code: "KeyA", vk: 65, modifiers: 2 }); // Ctrl+A → select all
         await this.sendKey({ key: "Delete", code: "Delete", vk: 46 }); // delete the selection
@@ -1305,6 +1372,79 @@ export class Page {
      *    and this is where that shows up as an error instead of as lost text.
      */
     async fill(ref, text) {
+        await this.checkEditable(ref, "fill", "nothing was typed");
+        await this.focusRef(ref, "fill", "nothing was typed");
+        const isNativeField = await this.callOnRef(ref, `function(){ return this.tagName === "INPUT" || this.tagName === "TEXTAREA"; }`);
+        if (isNativeField) {
+            // Fast path for <input>/<textarea>: set the value once via the native
+            // property setter instead of dispatching one real keydown/char/keyUp
+            // triple per character. Two problems this fixes at once (2026-08-29,
+            // judge #7702 — Bold.org essay textarea):
+            //   1. SPEED: ~2900 chars of per-keystroke dispatch took 120s+. One
+            //      native-setter call + one 'input' event is ~instant regardless
+            //      of length.
+            //   2. A live page's own React re-render firing on every single
+            //      keystroke (autosave, live word-count, validation) can throw
+            //      mid-dispatch on some sites — reproduced as "undefined is not
+            //      an object (evaluating 'text')" on a controlled textarea. A
+            //      one-shot value commit never gives that per-keystroke render
+            //      churn a chance to run, so it can't trip over its own state.
+            // `value` travels as a real CDP argument (Runtime.callFunctionOn
+            // `arguments`), not interpolated into the function's source text — so
+            // non-ASCII (em-dashes, etc.) can never hit a source-string escaping
+            // bug the way template-literal interpolation could.
+            await this.callOnRef(ref, `function(value){
+          const proto = this.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+          const prevValue = this.value;
+          setter.call(this, value);
+          // React (16+) shadows the native value setter with its own and caches the
+          // last-known value on a hidden _valueTracker so its synthetic 'change'
+          // handler can tell whether a raw 'input' event actually changed anything.
+          // Calling the native setter directly (above) writes the DOM value but
+          // never updates that tracker, so React still believes the value is
+          // whatever it was before — the dispatched 'input' event below gets
+          // silently ignored and the framework's own state never updates (this is
+          // the documented React controlled-input testing gotcha, same fix RTL/
+          // Enzyme use). Resetting the tracker to the OLD value first makes React's
+          // own comparison see a real change when 'input' fires.
+          const tracker = this._valueTracker;
+          if (tracker) tracker.setValue(prevValue);
+          this.dispatchEvent(new Event("input", { bubbles: true }));
+          this.dispatchEvent(new Event("change", { bubbles: true }));
+        }`, [text]);
+        }
+        else {
+            // contenteditable has no .value/_valueTracker to drive — and execCommand
+            // is silently reverted by some sites' own JS (see clearField's comment) —
+            // so this path still needs real keystrokes.
+            await this.clearField();
+            await this.type(text);
+        }
+    }
+    /** Empty a field (input, textarea, or contenteditable) by ref: click it, then
+     *  select-all + Delete via the same real Input-domain key dispatch fill() already
+     *  relies on — NOT document.execCommand, which some sites' own JS silently
+     *  reverts (a real keystroke is indistinguishable from a human's to the page).
+     *  Returns the resulting text length so the caller can assert the field is
+     *  actually empty instead of trusting the tool's own return value. */
+    async clear(ref) {
+        await this.checkEditable(ref, "clear", "nothing was changed");
+        await this.focusRef(ref, "clear", "nothing was changed");
+        await this.clearField();
+        return this.callOnRef(ref, `function(){
+        const t = this.tagName;
+        if (t === "INPUT" || t === "TEXTAREA") return this.value.length;
+        // textContent, not innerText: Chromium leaves a lone placeholder <br> in a
+        // just-cleared contenteditable, and innerText reads that as "\\n" (length
+        // 1) — a false "not actually empty" right after the clear that produced it.
+        return (this.textContent || "").length;
+      }`);
+    }
+    /** Shared by fill()/clear(): refuse a ref that can't take text at all (disabled,
+     *  readonly, or simply not a field) before either one touches the page — a bad
+     *  ref could otherwise clobber whatever the document selection currently holds. */
+    async checkEditable(ref, caller, consequence) {
         const state = await this.callOnRef(ref, `function(){
         const t = this.tagName;
         if (this.disabled) return { ok:false, why:"the field is disabled" };
@@ -1314,23 +1454,29 @@ export class Page {
         return { ok:true, why:"" };
       }`);
         if (!state.ok)
-            throw new Error(`fill: ref ${ref} — ${state.why}. Nothing was typed.`);
+            throw new Error(`${caller}: ref ${ref} — ${state.why}. ${consequence}.`);
+    }
+    /** Shared by fill()/clear(): click a ref and confirm focus actually landed there
+     *  before doing anything destructive to the current selection — every step after
+     *  the click is a BLIND keyboard dispatch to whatever currently holds focus. A
+     *  cookie banner, modal, or sticky header covering the field swallows the click,
+     *  and this is where that shows up as an error instead of as lost/mangled text.
+     *
+     *  document.activeElement stops at a shadow HOST — inside a web component it
+     *  returns the host, never the field. Descend through shadow roots or every
+     *  shadow-DOM fill/clear reads as "focus didn't land". */
+    async focusRef(ref, caller, consequence) {
         await this.click(ref);
         await sleep(this.rng.range(60, 160));
-        // document.activeElement stops at a shadow HOST — inside a web component it
-        // returns the host, never the field. Descend through shadow roots or every
-        // shadow-DOM fill reads as "focus didn't land".
         const focused = await this.callOnRef(ref, `function(){
         let a = document.activeElement;
         for (let i = 0; i < 10 && a && a.shadowRoot && a.shadowRoot.activeElement; i++) a = a.shadowRoot.activeElement;
         return a === this;
       }`);
         if (!focused) {
-            throw new Error(`fill: ref ${ref} — the click did not put focus in the field, so nothing was typed. ` +
+            throw new Error(`${caller}: ref ${ref} — the click did not put focus in the field, so ${consequence}. ` +
                 `Something is probably covering it (cookie banner, modal, sticky header).`);
         }
-        await this.clearField();
-        await this.type(text);
     }
     /** Resolve a snapshot ref to a live JS object handle (objectId) — the bridge
      *  from an accessibility-tree ref to callFunctionOn, so we can read/drive one

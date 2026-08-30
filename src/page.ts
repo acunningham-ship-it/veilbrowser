@@ -1110,8 +1110,14 @@ export class Page {
 
   /**
    * Focus an editable field matched by its label/placeholder/aria text (scrolled
-   * into view first), clear it (Ctrl+A) and type `value`. The snapshot-free analogue
-   * of fill(ref, text). Throws if no editable field matches. Returns the field.
+   * into view first) and set `value`. The snapshot-free analogue of fill(ref,
+   * text) — same native-setter + _valueTracker-reset fast path (2026-08-29,
+   * judge #7702) for <input>/<textarea>, since fillText has no snapshot ref to
+   * drive callOnRef with: it operates on document.activeElement right after
+   * the click, and checks the click actually landed on a native field before
+   * trusting that. contenteditable has no .value/tracker, so it still falls
+   * back to real keystrokes. Throws if no editable field matches. Returns the
+   * field.
    */
   async fillText(query: string, value: string, opts: { nth?: number } = {}): Promise<DomElement> {
     const el = await this.locateText(query, { nth: opts.nth, editableOnly: true });
@@ -1119,8 +1125,32 @@ export class Page {
     await sleep(this.rng.range(280, 460)); // let scroll settle
     await this.clickAt(el.x, el.y);
     await sleep(this.rng.range(40, 90));
-    await this.sendKey({ key: "a", code: "KeyA", vk: 65, modifiers: 2 }); // Ctrl+A select-all
-    await this.type(value);
+    if (el.tag === "input" || el.tag === "textarea") {
+      // value travels via JSON.stringify into the expression string, not a raw
+      // template interpolation of the RAW characters into veil's own source —
+      // JSON.stringify always emits a syntactically valid, correctly-escaped
+      // JS string literal, so this doesn't hit the bun non-ASCII source-escaping
+      // bug that motivated passing text as a real callFunctionOn argument in
+      // fill(ref, ...) (that bug is about bun mis-transpiling literal non-ASCII
+      // in *veil's own* .ts source, not about a JSON-escaped runtime string).
+      await this.evaluate<void>(`(function(){
+        const el = document.activeElement;
+        if (!el || (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA")) {
+          throw new Error("fillText: focus did not land on the target field — a cookie banner, modal, or sticky header may be covering it");
+        }
+        const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+        const prevValue = el.value;
+        setter.call(el, ${JSON.stringify(value)});
+        const tracker = el._valueTracker;
+        if (tracker) tracker.setValue(prevValue);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      })()`);
+    } else {
+      await this.sendKey({ key: "a", code: "KeyA", vk: 65, modifiers: 2 }); // Ctrl+A select-all
+      await this.type(value);
+    }
     return el;
   }
 
@@ -1474,8 +1504,59 @@ export class Page {
   async fill(ref: number, text: string) {
     await this.checkEditable(ref, "fill", "nothing was typed");
     await this.focusRef(ref, "fill", "nothing was typed");
-    await this.clearField();
-    await this.type(text);
+    const isNativeField = await this.callOnRef<boolean>(
+      ref,
+      `function(){ return this.tagName === "INPUT" || this.tagName === "TEXTAREA"; }`,
+    );
+    if (isNativeField) {
+      // Fast path for <input>/<textarea>: set the value once via the native
+      // property setter instead of dispatching one real keydown/char/keyUp
+      // triple per character. Two problems this fixes at once (2026-08-29,
+      // judge #7702 — Bold.org essay textarea):
+      //   1. SPEED: ~2900 chars of per-keystroke dispatch took 120s+. One
+      //      native-setter call + one 'input' event is ~instant regardless
+      //      of length.
+      //   2. A live page's own React re-render firing on every single
+      //      keystroke (autosave, live word-count, validation) can throw
+      //      mid-dispatch on some sites — reproduced as "undefined is not
+      //      an object (evaluating 'text')" on a controlled textarea. A
+      //      one-shot value commit never gives that per-keystroke render
+      //      churn a chance to run, so it can't trip over its own state.
+      // `value` travels as a real CDP argument (Runtime.callFunctionOn
+      // `arguments`), not interpolated into the function's source text — so
+      // non-ASCII (em-dashes, etc.) can never hit a source-string escaping
+      // bug the way template-literal interpolation could.
+      await this.callOnRef<void>(
+        ref,
+        `function(value){
+          const proto = this.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+          const prevValue = this.value;
+          setter.call(this, value);
+          // React (16+) shadows the native value setter with its own and caches the
+          // last-known value on a hidden _valueTracker so its synthetic 'change'
+          // handler can tell whether a raw 'input' event actually changed anything.
+          // Calling the native setter directly (above) writes the DOM value but
+          // never updates that tracker, so React still believes the value is
+          // whatever it was before — the dispatched 'input' event below gets
+          // silently ignored and the framework's own state never updates (this is
+          // the documented React controlled-input testing gotcha, same fix RTL/
+          // Enzyme use). Resetting the tracker to the OLD value first makes React's
+          // own comparison see a real change when 'input' fires.
+          const tracker = this._valueTracker;
+          if (tracker) tracker.setValue(prevValue);
+          this.dispatchEvent(new Event("input", { bubbles: true }));
+          this.dispatchEvent(new Event("change", { bubbles: true }));
+        }`,
+        [text],
+      );
+    } else {
+      // contenteditable has no .value/_valueTracker to drive — and execCommand
+      // is silently reverted by some sites' own JS (see clearField's comment) —
+      // so this path still needs real keystrokes.
+      await this.clearField();
+      await this.type(text);
+    }
   }
 
   /** Empty a field (input, textarea, or contenteditable) by ref: click it, then

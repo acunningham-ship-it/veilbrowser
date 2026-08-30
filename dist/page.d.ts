@@ -92,6 +92,15 @@ export interface FedCmDialog {
 export declare function isOriginAllowed(url: string, allow: string[]): boolean;
 export declare function isPrivateHost(url: string): boolean;
 /**
+ * Build the combo string press() expects ("Control+a") from a bare key plus an
+ * optional modifiers array — the MCP layer's `veil_press` tool takes them as two
+ * separate params (`key`, `modifiers`), but press()'s own chord parsing only
+ * understands them pre-joined with "+". Pure and tiny on purpose: this used to be
+ * inlined at the one call site and the modifiers array was silently never read,
+ * so a held Control/Alt/Meta/Shift never reached the page at all.
+ */
+export declare function pressCombo(key: string, modifiers?: string[]): string;
+/**
  * Resolve one character to a well-formed keystroke: the DOM `key`, the physical
  * `code`, the legacy `windowsVirtualKeyCode` (`vk`), the `text` to commit, and
  * whether the character needs the `shift` modifier held.
@@ -253,6 +262,7 @@ export declare class Page {
         url: string;
         status?: number;
         ok?: boolean;
+        timedOutWaitingForLoad?: boolean;
     }>;
     /** Reload the current page (Page.reload), waiting per `waitUntil`. */
     reload(opts?: {
@@ -360,8 +370,14 @@ export declare class Page {
     }): Promise<DomElement>;
     /**
      * Focus an editable field matched by its label/placeholder/aria text (scrolled
-     * into view first), clear it (Ctrl+A) and type `value`. The snapshot-free analogue
-     * of fill(ref, text). Throws if no editable field matches. Returns the field.
+     * into view first) and set `value`. The snapshot-free analogue of fill(ref,
+     * text) — same native-setter + _valueTracker-reset fast path (2026-08-29,
+     * judge #7702) for <input>/<textarea>, since fillText has no snapshot ref to
+     * drive callOnRef with: it operates on document.activeElement right after
+     * the click, and checks the click actually landed on a native field before
+     * trusting that. contenteditable has no .value/tracker, so it still falls
+     * back to real keystrokes. Throws if no editable field matches. Returns the
+     * field.
      */
     fillText(query: string, value: string, opts?: {
         nth?: number;
@@ -495,7 +511,9 @@ export declare class Page {
     type(text: string): Promise<void>;
     /** Clear the focused field: select-all (Ctrl+A) then Delete, via the Input
      *  domain like the rest of our key dispatch. Playwright's fill() clears first;
-     *  without this, filling a pre-populated input yields "oldnewvalue". */
+     *  without this, filling a pre-populated input yields "oldnewvalue". Shared by
+     *  the public fill() and clear() — both need a real keystroke here, not
+     *  execCommand, which some sites' own JS silently reverts. */
     private clearField;
     /**
      * Click a field, clear any existing value, then type into it.
@@ -514,6 +532,27 @@ export declare class Page {
      *    and this is where that shows up as an error instead of as lost text.
      */
     fill(ref: number, text: string): Promise<void>;
+    /** Empty a field (input, textarea, or contenteditable) by ref: click it, then
+     *  select-all + Delete via the same real Input-domain key dispatch fill() already
+     *  relies on — NOT document.execCommand, which some sites' own JS silently
+     *  reverts (a real keystroke is indistinguishable from a human's to the page).
+     *  Returns the resulting text length so the caller can assert the field is
+     *  actually empty instead of trusting the tool's own return value. */
+    clear(ref: number): Promise<number>;
+    /** Shared by fill()/clear(): refuse a ref that can't take text at all (disabled,
+     *  readonly, or simply not a field) before either one touches the page — a bad
+     *  ref could otherwise clobber whatever the document selection currently holds. */
+    private checkEditable;
+    /** Shared by fill()/clear(): click a ref and confirm focus actually landed there
+     *  before doing anything destructive to the current selection — every step after
+     *  the click is a BLIND keyboard dispatch to whatever currently holds focus. A
+     *  cookie banner, modal, or sticky header covering the field swallows the click,
+     *  and this is where that shows up as an error instead of as lost/mangled text.
+     *
+     *  document.activeElement stops at a shadow HOST — inside a web component it
+     *  returns the host, never the field. Descend through shadow roots or every
+     *  shadow-DOM fill/clear reads as "focus didn't land". */
+    private focusRef;
     /** Resolve a snapshot ref to a live JS object handle (objectId) — the bridge
      *  from an accessibility-tree ref to callFunctionOn, so we can read/drive one
      *  specific element instead of the whole page. */
