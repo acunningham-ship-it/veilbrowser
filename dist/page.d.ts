@@ -40,6 +40,19 @@ export interface DomElement {
     h: number;
     editable: boolean;
 }
+/** One element read back by extractText() — its content, not just the label used to find it. */
+export interface ExtractedText {
+    tag: string;
+    role: string;
+    /** The (truncated) label extractText matched the query against. */
+    label: string;
+    /** Full rendered text (innerText, falls back to textContent), uncapped. */
+    text: string;
+    /** .value for <input>/<textarea>/<select>, else null. */
+    value: string | null;
+    /** href for an <a>, else null. */
+    href: string | null;
+}
 export interface DomSnapshot {
     url: string;
     title: string;
@@ -382,6 +395,35 @@ export declare class Page {
     fillText(query: string, value: string, opts?: {
         nth?: number;
     }): Promise<DomElement>;
+    /**
+     * Read the content of the element(s) matching `query` by description — the missing verb
+     * next to clickText/fillText (2026-08-30, judge #7733/#7734, P1 of the "veil as a real
+     * high-level tool" plan). "extract the price" / "extract the status" without a snapshot ref
+     * or a CSS selector: rank visible elements by label match (same algorithm as locateText, but
+     * a WIDER element set — clickText/fillText only ever need interactive controls, extraction
+     * routinely targets plain text: a price in a <span>, a status in a <div>, a headline). Returns
+     * the FULL text/value, not the truncated ~100-char label locateText uses for matching.
+     *
+     * Pass `all: true` to return every match instead of just the best one — the single-page half
+     * of "extract all posts/comments" (Armani's own example). This does NOT do cross-page
+     * pagination or dedupe — that's the separately-scoped P2 harvesting build; this reads what's
+     * already on the page.
+     *
+     * Container/leaf overlap (live-caught on example.com during this build, not just theorized):
+     * a wrapping <p> and the <a> inside it can both match the same query with an IDENTICAL score
+     * and label — a live query for "Learn more" there returned the <p> (href: null) over the
+     * actual link before this was handled. Fixed with a leaf-preference pass: any candidate that
+     * CONTAINS another surviving candidate is dropped, so the more specific element wins the tie
+     * instead of the first one `querySelectorAll`'s document-order walk happens to visit. Still an
+     * honest heuristic, not a proof — two genuinely SIBLING elements with identical text (a
+     * repeated label pattern) are a real remaining ambiguity `nth`/`all` exist to work around.
+     */
+    extractText(query: string, opts?: {
+        nth?: number;
+        exact?: boolean;
+        role?: string;
+        all?: boolean;
+    }): Promise<ExtractedText | ExtractedText[]>;
     /** Move the cursor along a human curve to a target point. `buttons` mirrors
      *  CDP's bitmask (1 = left button down) — pass 1 while dragging so the move
      *  itself carries mousemove-with-button-held events a drag-and-drop library

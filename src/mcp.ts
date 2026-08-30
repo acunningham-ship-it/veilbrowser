@@ -123,6 +123,8 @@ const TOOLS = [
     inputSchema: { type: "object", properties: { query: { type: "string" }, nth: { type: "number", description: "which match, 0-based (default 0)" }, exact: { type: "boolean", description: "require exact label match" }, role: { type: "string", description: "restrict to this ARIA role" } }, required: ["query"] } },
   { name: "veil_fill_text", description: "Focus an editable field matched by its label/placeholder/aria text, clear it, and type `value` — the snapshot-free analogue of veil_fill for pages with no usable ref. Matches inputs/textareas/contenteditable only. Errors if no field matches.",
     inputSchema: { type: "object", properties: { query: { type: "string" }, value: { type: "string" }, nth: { type: "number", description: "which match, 0-based (default 0)" } }, required: ["query", "value"] } },
+  { name: "veil_extract_text", description: "Read the content of the element matching `query` by description — the read counterpart to veil_click_text/veil_fill_text, no snapshot ref or CSS selector needed. Returns { tag, role, label, text, value, href }: `text` is the full rendered text (not the truncated label used for matching), `value` is set for an <input>/<textarea>/<select>, `href` for a link. Pass `all:true` to return every visible match instead of just the best one — the single-page half of 'extract all posts/comments' (no pagination — this reads what's currently rendered). Wider element match than click/fill_text: also matches plain text containers (span/p/li/article/headings), since extraction routinely targets content, not just controls. Errors loudly if nothing matches (unless all:true, which returns an empty array).",
+    inputSchema: { type: "object", properties: { query: { type: "string" }, nth: { type: "number", description: "which match, 0-based (default 0), ignored when all:true" }, exact: { type: "boolean", description: "require exact label match" }, role: { type: "string", description: "restrict to this ARIA role" }, all: { type: "boolean", description: "return every visible match, not just the best one" } }, required: ["query"] } },
   { name: "veil_click", description: "Click an element by its snapshot ref (human-like mouse path).",
     inputSchema: { type: "object", properties: { ref: { type: "number" } }, required: ["ref"] } },
   { name: "veil_double_click", description: "Double-click an element (by ref) or absolute viewport coords — two real click events, the second carrying clickCount:2, which is what triggers a DOM 'dblclick'. Use this for n8n (double-click a node opens its config panel) and GHL/page builders (double-click an element to edit it in place); a plain veil_click only selects/focuses on these.",
@@ -232,6 +234,10 @@ async function callTool(name: string, args: any): Promise<any> {
     case "veil_fill_text": {
       const el = await p.fillText(args.query, args.value, { nth: args.nth });
       return text(`filled ${JSON.stringify(el.t)} @${el.x},${el.y} with ${args.value.length} chars`);
+    }
+    case "veil_extract_text": {
+      const result = await p.extractText(args.query, { nth: args.nth, exact: args.exact, role: args.role, all: args.all });
+      return text(JSON.stringify(result, null, 2));
     }
     case "veil_click":
       await p.click(args.ref);

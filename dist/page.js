@@ -1000,7 +1000,16 @@ export class Page {
      * completed action.
      */
     async clickText(query, opts = {}) {
-        const el = await this.locateText(query, opts);
+        // P1 resilience (2026-08-30, judge #7733/#7734): one soft retry on a miss before
+        // throwing. The common real-world case isn't "the element doesn't exist" — it's a page
+        // mid-hydration/re-render where the target flickers out of the walk for one pass. A hard
+        // fail on the FIRST miss made every transient DOM shift look identical to a genuine "not
+        // found," which is exactly the brittleness intent-based primitives are supposed to remove.
+        let el = await this.locateText(query, opts);
+        if (!el) {
+            await sleep(this.rng.range(500, 800));
+            el = await this.locateText(query, opts);
+        }
         if (!el)
             throw new Error(`clickText: no visible element matching ${JSON.stringify(query)}`);
         await sleep(this.rng.range(280, 460)); // let scroll + any reflow settle before the click
@@ -1019,7 +1028,13 @@ export class Page {
      * field.
      */
     async fillText(query, value, opts = {}) {
-        const el = await this.locateText(query, { nth: opts.nth, editableOnly: true });
+        // Same soft-retry as clickText — see that comment. A form field re-rendering (validation
+        // message appearing, a label animating in) is the exact transient-miss shape this covers.
+        let el = await this.locateText(query, { nth: opts.nth, editableOnly: true });
+        if (!el) {
+            await sleep(this.rng.range(500, 800));
+            el = await this.locateText(query, { nth: opts.nth, editableOnly: true });
+        }
         if (!el)
             throw new Error(`fillText: no editable field matching ${JSON.stringify(query)}`);
         await sleep(this.rng.range(280, 460)); // let scroll settle
@@ -1053,6 +1068,112 @@ export class Page {
             await this.type(value);
         }
         return el;
+    }
+    /**
+     * Read the content of the element(s) matching `query` by description — the missing verb
+     * next to clickText/fillText (2026-08-30, judge #7733/#7734, P1 of the "veil as a real
+     * high-level tool" plan). "extract the price" / "extract the status" without a snapshot ref
+     * or a CSS selector: rank visible elements by label match (same algorithm as locateText, but
+     * a WIDER element set — clickText/fillText only ever need interactive controls, extraction
+     * routinely targets plain text: a price in a <span>, a status in a <div>, a headline). Returns
+     * the FULL text/value, not the truncated ~100-char label locateText uses for matching.
+     *
+     * Pass `all: true` to return every match instead of just the best one — the single-page half
+     * of "extract all posts/comments" (Armani's own example). This does NOT do cross-page
+     * pagination or dedupe — that's the separately-scoped P2 harvesting build; this reads what's
+     * already on the page.
+     *
+     * Container/leaf overlap (live-caught on example.com during this build, not just theorized):
+     * a wrapping <p> and the <a> inside it can both match the same query with an IDENTICAL score
+     * and label — a live query for "Learn more" there returned the <p> (href: null) over the
+     * actual link before this was handled. Fixed with a leaf-preference pass: any candidate that
+     * CONTAINS another surviving candidate is dropped, so the more specific element wins the tie
+     * instead of the first one `querySelectorAll`'s document-order walk happens to visit. Still an
+     * honest heuristic, not a proof — two genuinely SIBLING elements with identical text (a
+     * repeated label pattern) are a real remaining ambiguity `nth`/`all` exist to work around.
+     */
+    async extractText(query, opts = {}) {
+        const spec = {
+            q: query.toLowerCase().replace(/\s+/g, " ").trim(),
+            exact: !!opts.exact,
+            role: opts.role || "",
+            nth: opts.nth ?? 0,
+            all: !!opts.all,
+        };
+        if (!spec.q)
+            throw new Error(`extractText: "query" must be a non-empty string, got ${JSON.stringify(query)}`);
+        const js = `(() => {
+      const SPEC = ${JSON.stringify(spec)};
+      // Wider than locateText's interactive-only SEL: extraction routinely targets plain
+      // content, not a control. Interactive tags stay included (extracting a button's label
+      // or a select's current value is legitimate too).
+      const SEL = 'a,button,input,textarea,select,summary,label,span,p,li,article,td,th,dd,dt,'
+        + 'blockquote,figcaption,h1,h2,h3,h4,h5,h6,[role],[aria-label]';
+      const seen = new Set(), cand = [];
+      const label = (e) => (
+        e.getAttribute('aria-label') || (e.innerText || '').trim() || e.value ||
+        e.placeholder || e.getAttribute('title') || e.getAttribute('name') || ''
+      ).replace(/\\s+/g, ' ').trim();
+      const vis = (e) => {
+        const r = e.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return false;
+        const s = getComputedStyle(e);
+        return s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) !== 0;
+      };
+      const walk = (root) => {
+        let all;
+        try { all = root.querySelectorAll('*'); } catch { return; }
+        for (const e of all) {
+          if (e.matches && e.matches(SEL) && !seen.has(e)) {
+            seen.add(e);
+            if (vis(e)) {
+              const tag = e.tagName.toLowerCase();
+              const role = e.getAttribute('role') || '';
+              if (!SPEC.role || role === SPEC.role) cand.push({ e, t: label(e).toLowerCase(), tag, role });
+            }
+          }
+          if (e.shadowRoot) walk(e.shadowRoot);
+        }
+      };
+      walk(document);
+      const scored = cand.map((c) => {
+        const t = c.t; let s = -1;
+        if (t === SPEC.q) s = 100;
+        else if (!SPEC.exact) {
+          if (t.startsWith(SPEC.q)) s = 80;
+          else if ((' ' + t).includes(' ' + SPEC.q)) s = 60;
+          else if (t.includes(SPEC.q)) s = 40;
+        }
+        return { c, s };
+      }).filter((x) => x.s >= 0);
+      // Leaf preference (live-verified 2026-08-30 against example.com, judge #7734 test-drive
+      // prep): a wrapping <p> and the <a> it contains can both match the SAME query with the
+      // SAME score and SAME label length — a plain score+length sort has no way to break that
+      // tie and can hand back the generic container with href:null instead of the actual link.
+      // Drop any candidate that CONTAINS another surviving candidate — the more specific
+      // (deeper/leaf) element is virtually always the one a description like "the X" means.
+      const leaves = scored.filter((x) => !scored.some((y) => y !== x && x.c.e.contains(y.c.e)));
+      leaves.sort((a, b) => b.s - a.s || a.c.t.length - b.c.t.length);
+      const read = (c) => {
+        const e = c.e;
+        const isField = e.tagName === 'INPUT' || e.tagName === 'TEXTAREA' || e.tagName === 'SELECT';
+        return {
+          tag: c.tag, role: c.role, label: label(e).slice(0, 100),
+          text: (e.innerText ?? e.textContent ?? '').trim(),
+          value: isField ? (e.value ?? null) : null,
+          href: e.tagName === 'A' ? (e.getAttribute('href') || null) : null,
+        };
+      };
+      if (SPEC.all) return leaves.map((s) => read(s.c));
+      const pick = leaves[SPEC.nth];
+      return pick ? read(pick.c) : null;
+    })()`;
+        const result = await this.evaluate(js);
+        if (opts.all)
+            return result ?? [];
+        if (!result)
+            throw new Error(`extractText: no visible element matching ${JSON.stringify(query)}`);
+        return result;
     }
     /** Move the cursor along a human curve to a target point. `buttons` mirrors
      *  CDP's bitmask (1 = left button down) — pass 1 while dragging so the move
