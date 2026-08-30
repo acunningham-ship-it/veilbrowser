@@ -1,5 +1,5 @@
 export { Browser } from "./browser.js";
-export { Page, isPrivateHost, isOriginAllowed } from "./page.js";
+export { Page, isPrivateHost, isOriginAllowed, verifyUrl, VERIFY_USER_AGENTS } from "./page.js";
 export { launchChrome, findChrome } from "./launcher.js";
 export { CDP } from "./cdp.js";
 export { STEALTH_SOURCE } from "./stealth.js";

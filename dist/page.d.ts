@@ -114,6 +114,51 @@ export declare function isPrivateHost(url: string): boolean;
  */
 export declare function pressCombo(key: string, modifiers?: string[]): string;
 /**
+ * Crawler UAs, in the order every hand-rolled skill verification currently
+ * tries them — a bare 0-byte response proves nothing about the post, it means
+ * you picked the wrong UA TODAY: measured 2026-08-05 Twitterbot worked and
+ * facebookexternalhit returned 0 bytes; 2026-08-07 it was exactly reversed.
+ * verifyUrl() loops all of them so a caller never has to hand-roll that dance.
+ */
+export declare const VERIFY_USER_AGENTS: string[];
+export interface VerifyUrlResult {
+    /** true iff a response with a non-empty body was fetched AND every requested
+     *  expectText string was found in it. */
+    ok: boolean;
+    status?: number;
+    bytes: number;
+    /** which UA in the tried list actually got a non-empty response. */
+    userAgent?: string;
+    /** per-expectText hit/miss, when expectText was passed. */
+    found: Record<string, boolean>;
+    /** first ~300 chars of the body, for a human to eyeball on a miss. */
+    snippet?: string;
+    /** set only if EVERY UA failed outright (network error / all empty). */
+    error?: string;
+}
+/**
+ * Fetch `url` completely OUTSIDE the browser/session (plain HTTP, no cookies,
+ * no CDP) using a real crawler UA, and check whether one or more strings are
+ * present in the response body. This is the primitive behind every posting
+ * skill's own hand-rolled "did the post actually go live, served to someone
+ * who ISN'T logged in as us" check — the tool's own return value can't be
+ * trusted as evidence of the live effect (and shouldn't be), so an anonymous
+ * external read is the only real proof. Collapses 4 near-identical
+ * hand-written curl+grep blocks (post-instagram, post-tiktok, post-facebook,
+ * and the general pattern in post-youtube) into one call, including the
+ * multi-UA retry every one of them already had to do by hand.
+ *
+ * Tries each UA in `opts.userAgents` (default VERIFY_USER_AGENTS) in order,
+ * stopping at the first that returns a non-empty body — an empty/blocked
+ * response from one crawler UA is common and not itself a failure signal,
+ * only "every UA came back empty" is.
+ */
+export declare function verifyUrl(url: string, opts?: {
+    expectText?: string | string[];
+    userAgents?: string[];
+    timeout?: number;
+}): Promise<VerifyUrlResult>;
+/**
  * Resolve one character to a well-formed keystroke: the DOM `key`, the physical
  * `code`, the legacy `windowsVirtualKeyCode` (`vk`), the `text` to commit, and
  * whether the character needs the `shift` modifier held.
@@ -172,6 +217,9 @@ export declare class Page {
     private fetchOff?;
     private mainFrameId?;
     private topPrivate;
+    /** Cached location.href as of the last goto() — see goto()'s silent-no-nav
+     *  retry check. undefined until the first goto() completes. */
+    private lastKnownUrl?;
     constructor(cdp: CDP, sessionId: string, targetId?: string | undefined);
     /** Enable the domains we use and arm stealth injection on every document. */
     init(opts?: {
@@ -261,8 +309,26 @@ export declare class Page {
         mobile?: boolean;
     }): Promise<void>;
     /** Commands go to whichever session is "active" — the main page by default,
-     *  or a child iframe's own session after useFrame(). */
+     *  or a child iframe's own session after useFrame(). Input.* commands get an
+     *  extra stall-recovery layer — see sendInput(). */
     private send;
+    /**
+     * The Input domain (mouse/key dispatch) can stall for 120s+ on a
+     * backgrounded/occluded target while every other domain (Runtime.evaluate,
+     * DOM, Accessibility) stays instant — measured live (joe's pain-list #3):
+     * clicks sitting past a 120s tool cap, completing minutes later once
+     * something else woke the target. The known fix used to be a manual
+     * `curl http://127.0.0.1:9333/json/activate/<targetId>` a caller had to
+     * remember and run out-of-band; this makes the tool do it itself.
+     *
+     * Give an Input command a short leash (INPUT_STALL_MS). On that specific
+     * timeout, bring the target to the foreground once (Page.bringToFront,
+     * scoped to the top-level session even if the stalled command was on a
+     * child iframe — bringing the PAGE forward is what un-stalls Input for
+     * every frame in it) and retry the exact same command once at the normal
+     * default timeout. Any other error passes straight through.
+     */
+    private sendInput;
     /** Navigate and wait. Always the main page, regardless of any active useFrame()
      *  — top-level navigation isn't a per-frame concept. `waitUntil` is "load"
      *  (default) or "networkidle" (no network for ~500ms — better for SPAs that
@@ -276,7 +342,9 @@ export declare class Page {
         status?: number;
         ok?: boolean;
         timedOutWaitingForLoad?: boolean;
+        retried?: boolean;
     }>;
+    private gotoOnce;
     /** Reload the current page (Page.reload), waiting per `waitUntil`. */
     reload(opts?: {
         timeout?: number;
@@ -380,6 +448,26 @@ export declare class Page {
         nth?: number;
         exact?: boolean;
         role?: string;
+    }): Promise<DomElement>;
+    /**
+     * Scroll the element matching `query` into view and return it, without
+     * clicking or filling — the standalone version of the scroll-into-view
+     * locateText already does internally for clickText/fillText/extractText.
+     *
+     * Fills the gap joe's pain-list #7 reported: veil_scroll(dy) dispatches a
+     * raw wheel event at the viewport, which only moves the element actually
+     * under the cursor — reporting "scrolled" while a target sitting inside an
+     * inner/nested scroll container (a modal body, a chat panel, a sidebar
+     * list) never moved. `el.scrollIntoView()` (what locateText already uses)
+     * walks up to whichever ancestor is actually scrollable and moves THAT,
+     * which is what a real "get this element on screen" primitive needs
+     * instead of blind viewport coordinates. Throws if nothing matches.
+     */
+    scrollToText(query: string, opts?: {
+        nth?: number;
+        exact?: boolean;
+        role?: string;
+        editableOnly?: boolean;
     }): Promise<DomElement>;
     /**
      * Focus an editable field matched by its label/placeholder/aria text (scrolled
@@ -543,7 +631,11 @@ export declare class Page {
      */
     scroll(dx: number, dy: number, opts?: {
         ctrl?: boolean;
-    }): Promise<void>;
+    }): Promise<{
+        moved: boolean;
+        dx: number;
+        dy: number;
+    }>;
     /** Type text into the focused element with human cadence. Each character is
      *  dispatched as a real keydown/char/keyUp with the right key, code, and
      *  virtual-key code (see keyInfo) — the bare text-only events this used to send
@@ -685,6 +777,24 @@ export declare class Page {
         poll?: number;
     }): Promise<void>;
     /**
+     * Poll until `needle` appears anywhere in the page's rendered text —
+     * including inside shadow roots, which plain innerText/textContent do not
+     * cross. The gap this fills (joe's pain-list #5): `waitFor("document.body
+     * .innerText.includes('X')")` reported false negatives on text that
+     * `evaluate` confirmed WAS present at that exact moment, because
+     * `document.body.innerText` alone misses anything rendered inside an open
+     * shadow root (a growing share of real sites — YouTube Studio, many design
+     * systems). Case-insensitive, whitespace-normalized substring match.
+     *
+     * On timeout, the error reports a snippet of what the page DOES currently
+     * show instead of just failing blind — a wait primitive with false
+     * negatives and no diagnostic is worse than none (joe's exact complaint).
+     */
+    waitForText(needle: string, opts?: {
+        timeout?: number;
+        poll?: number;
+    }): Promise<void>;
+    /**
      * Wait for a network response whose URL contains `match` (string) or matches
      * it (RegExp), and return its status.
      *
@@ -777,8 +887,11 @@ export declare class Page {
     /** Read the page's visible text (for scraping a model response, etc.). */
     innerText(): Promise<string>;
     /** Press a single named key on the focused element (Enter, Tab, Escape, arrows,
-     *  Delete, Home/End, PageUp/PageDown...). */
-    press(key: string): Promise<void>;
+     *  Delete, Home/End, PageUp/PageDown...). `count` repeats it with a human-ish
+     *  gap between each — the difference between one call and a 200-call loop to
+     *  walk Backspace across a long field (joe's pain-list #8). */
+    press(key: string, count?: number): Promise<void>;
+    private pressOnce;
     /**
      * Start intercepting FedCM on this page. Call it ON DEMAND, right before the
      * sign-in you're driving — never as blanket startup setup. Any page that

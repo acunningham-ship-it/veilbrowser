@@ -39,7 +39,8 @@ const VERSION = (() => {
 })();
 import { Browser } from "./browser.js";
 import { PRESETS, Fingerprint } from "./fingerprint.js";
-import { pressCombo } from "./page.js";
+import { pressCombo, verifyUrl } from "./page.js";
+import { applyAliases, validateArgs } from "./mcp-validate.js";
 let browser = null;
 let page = null;
 /**
@@ -105,7 +106,7 @@ async function ensurePage() {
     return page;
 }
 const TOOLS = [
-    { name: "veil_goto", description: "Navigate the browser to a URL (launches Chrome on first call). waitUntil 'load' (default) or 'networkidle' (wait until no network for ~500ms — better for SPAs that fetch after load).",
+    { name: "veil_goto", description: "Navigate the browser to a URL (launches Chrome on first call). waitUntil 'load' (default) or 'networkidle' (wait until no network for ~500ms — better for SPAs that fetch after load). Returns the REAL current location.href after navigating (not an echo of the url you passed) — auto-retries once if it detects the page silently never moved.",
         inputSchema: { type: "object", properties: { url: { type: "string" }, waitUntil: { type: "string", enum: ["load", "networkidle"] } }, required: ["url"] } },
     { name: "veil_reload", description: "Reload the current page. waitUntil 'load' (default) or 'networkidle'.",
         inputSchema: { type: "object", properties: { waitUntil: { type: "string", enum: ["load", "networkidle"] } } } },
@@ -135,12 +136,14 @@ const TOOLS = [
         inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
     { name: "veil_select", description: "Set a <select> dropdown (by snapshot ref) to a value and fire input+change — the reliable way to drive a native <select>, which click+type can't. Value matches an option's value, then its visible label/text.",
         inputSchema: { type: "object", properties: { ref: { type: "number" }, value: { type: "string" } }, required: ["ref", "value"] } },
-    { name: "veil_press", description: "Press a key (or key combo) on the focused element. Named keys: Enter, Tab, Escape, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown — or any single character. Use 'Enter' to submit a search box or form (fill a field, then veil_press Enter). Pass modifiers (e.g. modifiers:['Control'], key:'a' for select-all) to hold Alt/Control/Meta/Shift while the key is pressed — a held Control/Alt/Meta sends the chord only, it will NOT also type the bare character.",
-        inputSchema: { type: "object", properties: { key: { type: "string", description: "A named key, or a single character." }, modifiers: { type: "array", items: { type: "string", enum: ["Alt", "Control", "Meta", "Shift"] }, description: "Held while key is pressed." } }, required: ["key"] } },
+    { name: "veil_press", description: "Press a key (or key combo) on the focused element. Named keys: Enter, Tab, Escape, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown — or any single character. Use 'Enter' to submit a search box or form (fill a field, then veil_press Enter). Pass modifiers (e.g. modifiers:['Control'], key:'a' for select-all) to hold Alt/Control/Meta/Shift while the key is pressed — a held Control/Alt/Meta sends the chord only, it will NOT also type the bare character. Pass count to repeat it (e.g. count:200 to Backspace-clear a long field in one call instead of 200).",
+        inputSchema: { type: "object", properties: { key: { type: "string", description: "A named key, or a single character." }, modifiers: { type: "array", items: { type: "string", enum: ["Alt", "Control", "Meta", "Shift"] }, description: "Held while key is pressed." }, count: { type: "number", description: "how many times to press it (default 1)" } }, required: ["key"] } },
     { name: "veil_clear", description: "Empty a field — input, textarea, or contenteditable — by ref (from snapshot). Selects all then deletes via real key dispatch (not execCommand, which some sites' JS silently reverts) and returns the resulting text length so you can assert it's actually empty before typing into it.",
         inputSchema: { type: "object", properties: { ref: { type: "number" } }, required: ["ref"] } },
-    { name: "veil_scroll", description: "Scroll the page by a pixel delta via a real mouse-wheel event (positive dy scrolls down, positive dx scrolls right). Reveals lazy-loaded / off-screen content; re-run veil_snapshot after. Pass ctrl:true to zoom instead of pan/scroll — infinite-canvas editors (n8n's workflow canvas, most GHL/Webflow-style builders) branch zoom-vs-pan on the Ctrl modifier bit, same as a trackpad pinch.",
+    { name: "veil_scroll", description: "Scroll the page by a pixel delta via a real mouse-wheel event (positive dy scrolls down, positive dx scrolls right). Reveals lazy-loaded / off-screen content; re-run veil_snapshot after. Pass ctrl:true to zoom instead of pan/scroll — infinite-canvas editors (n8n's workflow canvas, most GHL/Webflow-style builders) branch zoom-vs-pan on the Ctrl modifier bit, same as a trackpad pinch. Reports whether anything actually moved — a wheel event only scrolls whatever's under the cursor, so this can honestly report moved:false (e.g. your target is inside a different scroll container). If you're trying to bring a specific element into view rather than scroll blindly, prefer veil_scroll_into_view instead.",
         inputSchema: { type: "object", properties: { dx: { type: "number", description: "horizontal pixels (default 0)" }, dy: { type: "number", description: "vertical pixels (positive = down); negative = zoom in when ctrl:true" }, ctrl: { type: "boolean", description: "hold Ctrl — zoom instead of pan on canvas editors" } }, required: ["dy"] } },
+    { name: "veil_scroll_into_view", description: "Scroll the element matching `query` into view and return it — no clicking or filling. Use this instead of veil_scroll(dx,dy) when you know WHAT you want visible rather than how far to scroll blindly; it walks up to whatever ancestor is actually scrollable (a modal body, a chat panel, a nested list), which a raw wheel event at viewport coordinates can miss entirely.",
+        inputSchema: { type: "object", properties: { query: { type: "string" }, nth: { type: "number" }, exact: { type: "boolean" }, role: { type: "string" } }, required: ["query"] } },
     { name: "veil_set_viewport", description: "Set the viewport size (and optional deviceScaleFactor / mobile emulation) — the page sees this as window.innerWidth/Height, screen size, and devicePixelRatio. Emulate a phone or force a fixed desktop size for reproducible screenshots.",
         inputSchema: { type: "object", properties: { width: { type: "number" }, height: { type: "number" }, deviceScaleFactor: { type: "number", description: "device pixel ratio (default 1)" }, mobile: { type: "boolean", description: "mobile emulation (default false)" } }, required: ["width", "height"] } },
     { name: "veil_set_user_agent", description: "Override the User-Agent at runtime, keeping the Sec-CH-UA client-hint brands aligned with it (a bare UA with mismatched hints is a fingerprint tell).",
@@ -160,6 +163,8 @@ const TOOLS = [
         inputSchema: { type: "object", properties: { expression: { type: "string" }, timeout: { type: "number", description: "ms before giving up (default 10000)" }, poll: { type: "number", description: "ms between checks (default 100)" } }, required: ["expression"] } },
     { name: "veil_wait_for_selector", description: "Poll until a CSS selector matches, then return (the selector-shaped convenience over veil_wait_for). Pass visible:true to also require the element to be laid out and not display:none/visibility:hidden. Errors on timeout.",
         inputSchema: { type: "object", properties: { selector: { type: "string" }, timeout: { type: "number", description: "ms before giving up (default 10000)" }, visible: { type: "boolean", description: "also require the element to be visibly rendered (default false)" } }, required: ["selector"] } },
+    { name: "veil_wait_for_text", description: "Poll until `text` appears anywhere in the page's rendered text (case-insensitive, whitespace-normalized substring match) — including inside shadow roots, which document.body.innerText misses. Use this instead of veil_wait_for for 'wait until this text shows up' (a toast, a result count, a success message); it doesn't false-negative on shadow-DOM content the way a plain innerText check does. On timeout the error includes a snippet of what the page currently shows.",
+        inputSchema: { type: "object", properties: { text: { type: "string" }, timeout: { type: "number", description: "ms before giving up (default 10000)" }, poll: { type: "number", description: "ms between checks (default 100)" } }, required: ["text"] } },
     { name: "veil_click_at", description: "Trusted click at absolute viewport coordinates (x, y). Use when there is no snapshot ref to target — a canvas, map, or custom widget.",
         inputSchema: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"] } },
     { name: "veil_get_cookies", description: "Return the browser's current cookies as JSON (name, value, domain, path, expires, httpOnly, secure, sameSite, ...). Symmetric with cookie injection. Optionally pass `urls` to scope the read to specific origins.",
@@ -191,10 +196,19 @@ const TOOLS = [
         inputSchema: { type: "object", properties: { ref: { type: "number" }, fromX: { type: "number" }, fromY: { type: "number" }, toX: { type: "number" }, toY: { type: "number" }, via: { type: "array", description: "intermediate waypoints, in order, before the final toX/toY", items: { type: "object", properties: { x: { type: "number" }, y: { type: "number" } }, required: ["x", "y"] } } }, required: ["toX", "toY"] } },
     { name: "veil_frames", description: "List cross-origin child iframes discovered on the current page (e.g. a drag-and-drop site builder whose whole canvas is one iframe on a different subdomain). Same-origin iframes don't need this — they already show up in a normal veil_snapshot. Call after veil_goto if a page you expect to interact with returns '(no interactive elements)'.",
         inputSchema: { type: "object", properties: {} } },
+    { name: "veil_verify_url", description: "Fetch `url` completely OUTSIDE the browser session — plain HTTP, a real crawler UA (Facebook/Twitter/Googlebot, tried in order), no cookies, no login — and check whether `expectText` (a string or array of strings) appears in the response. This is the ground-truth check every posting skill needs after publishing: the tool's own return value proves the click happened, not that the post is actually live and visible to someone who ISN'T logged in as you. Returns which UA worked, byte count, per-string found/not-found, and a snippet of the body. Doesn't need veil_goto first — works standalone.",
+        inputSchema: { type: "object", properties: {
+                url: { type: "string" },
+                expectText: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }], description: "text (or texts) that must appear in the response for ok:true" },
+                userAgents: { type: "array", items: { type: "string" }, description: "override the default crawler-UA list (Facebook, Twitter, Googlebot)" },
+                timeout: { type: "number", description: "ms per UA attempt (default 15000)" },
+            }, required: ["url"] } },
     { name: "veil_use_frame", description: "Point every following veil_snapshot/veil_click/veil_fill/veil_type/veil_eval call at one child iframe (index from veil_frames), instead of the main page. Omit index (or pass null) to switch back to the main page. Existing refs are invalidated on switch — call veil_snapshot again after switching.",
         inputSchema: { type: "object", properties: { index: { type: ["number", "null"] } } } },
 ];
-async function callTool(name, args) {
+async function callTool(name, rawArgs) {
+    const args = applyAliases(name, rawArgs);
+    validateArgs(TOOLS, name, args);
     if (name === "veil_close") {
         if (browser)
             await browser.close();
@@ -202,11 +216,18 @@ async function callTool(name, args) {
         page = null;
         return { content: [{ type: "text", text: "closed" }] };
     }
+    if (name === "veil_verify_url") {
+        // Deliberately outside ensurePage() — this is a plain external fetch, no
+        // browser/session/cookies involved, so it works even before veil_goto has
+        // ever been called.
+        const r = await verifyUrl(args.url, { expectText: args.expectText, userAgents: args.userAgents, timeout: args.timeout });
+        return text(JSON.stringify(r, null, 2));
+    }
     const p = await ensurePage();
     switch (name) {
         case "veil_goto": {
             const res = await p.goto(args.url, { waitUntil: args.waitUntil });
-            return text(`navigated to ${await p.url()}${res.status != null ? ` (HTTP ${res.status})` : ""}`);
+            return text(`navigated to ${res.url}${res.status != null ? ` (HTTP ${res.status})` : ""}${res.retried ? " (retried once — the first attempt didn't move)" : ""}`);
         }
         case "veil_reload":
             await p.reload({ waitUntil: args.waitUntil });
@@ -264,8 +285,8 @@ async function callTool(name, args) {
             return text(`typed ${args.text.length} chars`);
         case "veil_press": {
             const combo = pressCombo(args.key, args.modifiers);
-            await p.press(combo);
-            return text(`pressed ${combo}`);
+            await p.press(combo, args.count ?? 1);
+            return text(`pressed ${combo}${args.count && args.count !== 1 ? ` x${args.count}` : ""}`);
         }
         case "veil_clear": {
             const len = await p.clear(args.ref);
@@ -273,9 +294,17 @@ async function callTool(name, args) {
         }
         case "veil_select":
             return text(`set <select> [${args.ref}] to ${JSON.stringify(await p.select(args.ref, args.value))}`);
-        case "veil_scroll":
-            await p.scroll(args.dx ?? 0, args.dy ?? 0, { ctrl: args.ctrl });
-            return text(`${args.ctrl ? "zoomed" : "scrolled"} (${args.dx ?? 0}, ${args.dy ?? 0})`);
+        case "veil_scroll": {
+            const r = await p.scroll(args.dx ?? 0, args.dy ?? 0, { ctrl: args.ctrl });
+            const verb = args.ctrl ? "zoomed" : "scrolled";
+            return text(r.moved
+                ? `${verb} (${r.dx}, ${r.dy})`
+                : `${verb} requested (${args.dx ?? 0}, ${args.dy ?? 0}) but nothing moved — the cursor position may not be over a scrollable element, or your target is in a different scroll container. Try veil_scroll_into_view instead.`);
+        }
+        case "veil_scroll_into_view": {
+            const el = await p.scrollToText(args.query, { nth: args.nth, exact: args.exact, role: args.role });
+            return text(`scrolled into view: ${JSON.stringify(el.t)} (${el.tag}${el.role ? `/${el.role}` : ""}) @${el.x},${el.y}`);
+        }
         case "veil_set_viewport":
             await p.setViewport({ width: args.width, height: args.height, deviceScaleFactor: args.deviceScaleFactor, mobile: args.mobile });
             return text(`viewport set to ${args.width}x${args.height}${args.mobile ? " (mobile)" : ""}`);
@@ -310,6 +339,9 @@ async function callTool(name, args) {
         case "veil_wait_for_selector":
             await p.waitForSelector(args.selector, { timeout: args.timeout, visible: args.visible });
             return text(`selector matched: ${args.selector}`);
+        case "veil_wait_for_text":
+            await p.waitForText(args.text, { timeout: args.timeout, poll: args.poll });
+            return text(`text found: ${JSON.stringify(args.text)}`);
         case "veil_click_at":
             await p.clickAt(args.x, args.y);
             return text(`clicked at (${args.x}, ${args.y})`);
