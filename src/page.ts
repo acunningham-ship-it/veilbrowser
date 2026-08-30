@@ -137,6 +137,20 @@ export function isOriginAllowed(url: string, allow: string[]): boolean {
   });
 }
 
+/** Loose same-target check for goto()'s silent-no-navigation retry: origin +
+ *  pathname (trailing slash ignored) must match; query/hash differences don't
+ *  count as "already there" (they're often the actual point of the nav — a
+ *  different reel/post id in the query string, say). Unparseable URLs (a
+ *  relative href, `about:blank`) fall back to a raw string compare. */
+function sameTarget(a: string, b: string): boolean {
+  try {
+    const ua = new URL(a), ub = new URL(b, a || undefined);
+    return ua.origin === ub.origin && ua.pathname.replace(/\/$/, "") === ub.pathname.replace(/\/$/, "");
+  } catch {
+    return a === b;
+  }
+}
+
 export function isPrivateHost(url: string): boolean {
   let host: string;
   try { host = new URL(url).hostname.toLowerCase(); } catch { return false; }
@@ -265,6 +279,88 @@ export function pressCombo(key: string, modifiers?: string[]): string {
 }
 
 /**
+ * Crawler UAs, in the order every hand-rolled skill verification currently
+ * tries them — a bare 0-byte response proves nothing about the post, it means
+ * you picked the wrong UA TODAY: measured 2026-08-05 Twitterbot worked and
+ * facebookexternalhit returned 0 bytes; 2026-08-07 it was exactly reversed.
+ * verifyUrl() loops all of them so a caller never has to hand-roll that dance.
+ */
+export const VERIFY_USER_AGENTS = [
+  "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+  "Twitterbot/1.0",
+  "Googlebot/2.1 (+http://www.google.com/bot.html)",
+];
+
+export interface VerifyUrlResult {
+  /** true iff a response with a non-empty body was fetched AND every requested
+   *  expectText string was found in it. */
+  ok: boolean;
+  status?: number;
+  bytes: number;
+  /** which UA in the tried list actually got a non-empty response. */
+  userAgent?: string;
+  /** per-expectText hit/miss, when expectText was passed. */
+  found: Record<string, boolean>;
+  /** first ~300 chars of the body, for a human to eyeball on a miss. */
+  snippet?: string;
+  /** set only if EVERY UA failed outright (network error / all empty). */
+  error?: string;
+}
+
+/**
+ * Fetch `url` completely OUTSIDE the browser/session (plain HTTP, no cookies,
+ * no CDP) using a real crawler UA, and check whether one or more strings are
+ * present in the response body. This is the primitive behind every posting
+ * skill's own hand-rolled "did the post actually go live, served to someone
+ * who ISN'T logged in as us" check — the tool's own return value can't be
+ * trusted as evidence of the live effect (and shouldn't be), so an anonymous
+ * external read is the only real proof. Collapses 4 near-identical
+ * hand-written curl+grep blocks (post-instagram, post-tiktok, post-facebook,
+ * and the general pattern in post-youtube) into one call, including the
+ * multi-UA retry every one of them already had to do by hand.
+ *
+ * Tries each UA in `opts.userAgents` (default VERIFY_USER_AGENTS) in order,
+ * stopping at the first that returns a non-empty body — an empty/blocked
+ * response from one crawler UA is common and not itself a failure signal,
+ * only "every UA came back empty" is.
+ */
+export async function verifyUrl(
+  url: string,
+  opts: { expectText?: string | string[]; userAgents?: string[]; timeout?: number } = {},
+): Promise<VerifyUrlResult> {
+  const uas = opts.userAgents ?? VERIFY_USER_AGENTS;
+  const wants = opts.expectText == null ? [] : Array.isArray(opts.expectText) ? opts.expectText : [opts.expectText];
+  const timeout = opts.timeout ?? 15000;
+  let lastError: string | undefined;
+
+  for (const userAgent of uas) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const resp = await fetch(url, { headers: { "User-Agent": userAgent }, signal: controller.signal });
+      const body = await resp.text();
+      clearTimeout(timer);
+      if (!body) continue; // this UA got nothing back — try the next one, not a hard fail yet
+      const found: Record<string, boolean> = {};
+      for (const w of wants) found[w] = body.includes(w);
+      const allFound = wants.every((w) => found[w]);
+      return {
+        ok: resp.ok && (wants.length === 0 || allFound),
+        status: resp.status,
+        bytes: body.length,
+        userAgent,
+        found,
+        snippet: body.slice(0, 300).replace(/\s+/g, " ").trim(),
+      };
+    } catch (e: any) {
+      clearTimeout(timer);
+      lastError = String(e?.message ?? e);
+    }
+  }
+  return { ok: false, bytes: 0, found: {}, error: lastError ?? "every user-agent returned an empty body" };
+}
+
+/**
  * Resolve one character to a well-formed keystroke: the DOM `key`, the physical
  * `code`, the legacy `windowsVirtualKeyCode` (`vk`), the `text` to commit, and
  * whether the character needs the `shift` modifier held.
@@ -306,6 +402,12 @@ async function mapConcurrent<T, R>(items: T[], limit: number, fn: (item: T) => P
 
 /** How many DOM.getBoxModel calls snapshot() keeps in flight. */
 const BOX_BATCH = 24;
+
+/** Short leash for a first attempt at an Input.* command before assuming it's
+ *  stalled (see Page.sendInput) — long enough that normal network/render jank
+ *  never trips it, short enough that a real stall gets recovered well inside
+ *  a caller's own tool-call timeout instead of eating all of it. */
+const INPUT_STALL_MS = 5000;
 
 export class Page {
   private rng = new Rng();
@@ -367,6 +469,9 @@ export class Page {
   private fetchOff?: () => void; // tears down the shared requestPaused + frameNavigated listeners
   private mainFrameId?: string;
   private topPrivate = false; // is the page's own top-level origin private?
+  /** Cached location.href as of the last goto() — see goto()'s silent-no-nav
+   *  retry check. undefined until the first goto() completes. */
+  private lastKnownUrl?: string;
 
   constructor(
     private cdp: CDP,
@@ -618,9 +723,37 @@ export class Page {
   }
 
   /** Commands go to whichever session is "active" — the main page by default,
-   *  or a child iframe's own session after useFrame(). */
-  private send<T = any>(method: string, params: Record<string, any> = {}) {
+   *  or a child iframe's own session after useFrame(). Input.* commands get an
+   *  extra stall-recovery layer — see sendInput(). */
+  private send<T = any>(method: string, params: Record<string, any> = {}): Promise<T> {
+    if (method.startsWith("Input.")) return this.sendInput<T>(method, params);
     return this.cdp.send<T>(method, params, this.activeSessionId);
+  }
+
+  /**
+   * The Input domain (mouse/key dispatch) can stall for 120s+ on a
+   * backgrounded/occluded target while every other domain (Runtime.evaluate,
+   * DOM, Accessibility) stays instant — measured live (joe's pain-list #3):
+   * clicks sitting past a 120s tool cap, completing minutes later once
+   * something else woke the target. The known fix used to be a manual
+   * `curl http://127.0.0.1:9333/json/activate/<targetId>` a caller had to
+   * remember and run out-of-band; this makes the tool do it itself.
+   *
+   * Give an Input command a short leash (INPUT_STALL_MS). On that specific
+   * timeout, bring the target to the foreground once (Page.bringToFront,
+   * scoped to the top-level session even if the stalled command was on a
+   * child iframe — bringing the PAGE forward is what un-stalls Input for
+   * every frame in it) and retry the exact same command once at the normal
+   * default timeout. Any other error passes straight through.
+   */
+  private async sendInput<T = any>(method: string, params: Record<string, any>): Promise<T> {
+    try {
+      return await this.cdp.send<T>(method, params, this.activeSessionId, INPUT_STALL_MS);
+    } catch (e: any) {
+      if (!String(e?.message ?? "").includes("timed out")) throw e;
+      await this.cdp.send("Page.bringToFront", {}, this.sessionId).catch(() => {});
+      return this.cdp.send<T>(method, params, this.activeSessionId);
+    }
   }
 
   /** Navigate and wait. Always the main page, regardless of any active useFrame()
@@ -629,6 +762,36 @@ export class Page {
    *  fetch after the load event). Reset ref/session state so a prior useFrame()
    *  can't leak across the nav and a leftover ref can't click wrong coords. */
   async goto(
+    url: string,
+    opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {},
+  ): Promise<{ url: string; status?: number; ok?: boolean; timedOutWaitingForLoad?: boolean; retried?: boolean }> {
+    // beforeUrl + one retry closes joe's pain-list #6: goto("...facebook.com
+    // /reel/<id>") once left the tab sitting on an hours-old page with no
+    // signal anything was wrong — the routine #2 timeout swallow (below)
+    // made a genuine "didn't navigate at all" indistinguishable from "navigated
+    // fine, ignore the throw". Comparing location.href before/after and
+    // retrying once when it silently never moved makes that failure visible
+    // and self-healing instead of needing evaluate("location.href") by hand
+    // to catch it after the fact.
+    //
+    // beforeUrl comes from the CACHED result of the last goto, not a fresh
+    // evaluate() round-trip against the live document: probing the page right
+    // as a new navigation is about to start is an unnecessary extra command
+    // on the hot path of every single goto() call, for a comparison that only
+    // matters on the (rare) silent-no-nav case. undefined on the very first
+    // call ever (nothing to compare against yet) — skip the check then.
+    const beforeUrl = this.lastKnownUrl;
+    let result: { url: string; status?: number; ok?: boolean; timedOutWaitingForLoad?: boolean; retried?: boolean } =
+      await this.gotoOnce(url, opts);
+    if (beforeUrl !== undefined && result.url === beforeUrl && !sameTarget(beforeUrl, url)) {
+      result = await this.gotoOnce(url, opts);
+      result.retried = true;
+    }
+    this.lastKnownUrl = result.url;
+    return result;
+  }
+
+  private async gotoOnce(
     url: string,
     opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {},
   ): Promise<{ url: string; status?: number; ok?: boolean; timedOutWaitingForLoad?: boolean }> {
@@ -641,9 +804,15 @@ export class Page {
     // loaderId, so the final hop's status wins). Needs the Network domain enabled.
     await this.cdp.send("Network.enable", {}, this.sessionId).catch(() => {});
     const docStatus = new Map<string, number>(); // loaderId -> HTTP status
+    const docUrl = new Map<string, string>(); // loaderId -> the response's own URL (post-redirect)
     const offResp = this.cdp.on(
       "Network.responseReceived",
-      (p: any) => { if (p.type === "Document" && p.loaderId) docStatus.set(p.loaderId, p.response?.status); },
+      (p: any) => {
+        if (p.type === "Document" && p.loaderId) {
+          docStatus.set(p.loaderId, p.response?.status);
+          if (p.response?.url) docUrl.set(p.loaderId, p.response.url);
+        }
+      },
       this.sessionId,
     );
     let loaderId: string | undefined;
@@ -710,8 +879,21 @@ export class Page {
     // status stays undefined only when no Document response is observed for this
     // loaderId (e.g. about:blank) — additive, so callers that ignore it are fine.
     const status = loaderId ? docStatus.get(loaderId) : undefined;
+    // Report the REAL current location, not an echo of the requested url — a
+    // caller who trusted `res.url === requestedUrl` had no way to tell a
+    // genuine silent no-navigation apart from success (joe's pain-list #6).
+    // Read off the Document response's OWN url (captured by the SAME
+    // Network.responseReceived listener already armed above for status, not
+    // a separate CDP round-trip) — this is the post-redirect URL Chrome
+    // actually landed on. A live extra command here (evaluate("location.href")
+    // AND Page.getFrameTree were both tried) reproducibly killed the whole
+    // CDP connection in testing right after a data: URL navigation; reusing
+    // data already flowing through an existing listener sidesteps that
+    // entirely instead of chasing why. Falls back to the requested url for
+    // same-document navs (no Document response — the input WAS where it went).
+    const actualUrl = (loaderId && docUrl.get(loaderId)) || url;
     return {
-      url, status, ok: status == null ? undefined : status >= 200 && status < 400,
+      url: actualUrl, status, ok: status == null ? undefined : status >= 200 && status < 400,
       ...(timedOutWaitingForLoad ? { timedOutWaitingForLoad: true } : {}),
     };
   }
@@ -1128,6 +1310,29 @@ export class Page {
     if (!el) throw new Error(`clickText: no visible element matching ${JSON.stringify(query)}`);
     await sleep(this.rng.range(280, 460)); // let scroll + any reflow settle before the click
     await this.clickAt(el.x, el.y);
+    return el;
+  }
+
+  /**
+   * Scroll the element matching `query` into view and return it, without
+   * clicking or filling — the standalone version of the scroll-into-view
+   * locateText already does internally for clickText/fillText/extractText.
+   *
+   * Fills the gap joe's pain-list #7 reported: veil_scroll(dy) dispatches a
+   * raw wheel event at the viewport, which only moves the element actually
+   * under the cursor — reporting "scrolled" while a target sitting inside an
+   * inner/nested scroll container (a modal body, a chat panel, a sidebar
+   * list) never moved. `el.scrollIntoView()` (what locateText already uses)
+   * walks up to whichever ancestor is actually scrollable and moves THAT,
+   * which is what a real "get this element on screen" primitive needs
+   * instead of blind viewport coordinates. Throws if nothing matches.
+   */
+  async scrollToText(
+    query: string,
+    opts: { nth?: number; exact?: boolean; role?: string; editableOnly?: boolean } = {},
+  ): Promise<DomElement> {
+    const el = await this.locateText(query, opts);
+    if (!el) throw new Error(`scrollToText: no visible element matching ${JSON.stringify(query)}`);
     return el;
   }
 
@@ -1585,7 +1790,24 @@ export class Page {
    * most GHL/Webflow-style builders) key their zoom-vs-pan branch off. Plain
    * scroll pans/scrolls the canvas; Ctrl+scroll zooms it.
    */
-  async scroll(dx: number, dy: number, opts: { ctrl?: boolean } = {}) {
+  async scroll(dx: number, dy: number, opts: { ctrl?: boolean } = {}): Promise<{ moved: boolean; dx: number; dy: number }> {
+    // Measure whatever's actually scrollable under the cursor BEFORE and AFTER
+    // — a wheel event at viewport coords only moves the element under the
+    // cursor, not necessarily the page. Reporting "scrolled" unconditionally
+    // (the old behavior) was joe's pain-list #7: a nested scroll container
+    // (modal body, chat panel, sidebar list) never moved and the tool claimed
+    // success anyway. Falls back to window scroll if nothing under the point
+    // is independently scrollable.
+    const readPos = `(() => {
+      const el = document.elementFromPoint(${this.mouse.x}, ${this.mouse.y});
+      let n = el;
+      while (n && n !== document.body && n.scrollHeight <= n.clientHeight && n.scrollWidth <= n.clientWidth) n = n.parentElement;
+      if (n && n !== document.documentElement && (n.scrollHeight > n.clientHeight || n.scrollWidth > n.clientWidth)) {
+        return [n.scrollLeft, n.scrollTop];
+      }
+      return [window.scrollX, window.scrollY];
+    })()`;
+    const [beforeX, beforeY] = await this.evaluate<[number, number]>(readPos).catch(() => [0, 0]);
     await this.send("Input.dispatchMouseEvent", {
       type: "mouseWheel",
       x: this.mouse.x,
@@ -1595,6 +1817,9 @@ export class Page {
       modifiers: opts.ctrl ? 2 : 0, // CDP bitfield: Ctrl=2
     });
     await sleep(this.rng.range(80, 200)); // settle, like a human watching content load
+    const [afterX, afterY] = await this.evaluate<[number, number]>(readPos).catch(() => [beforeX, beforeY]);
+    const movedDx = afterX - beforeX, movedDy = afterY - beforeY;
+    return { moved: movedDx !== 0 || movedDy !== 0, dx: movedDx, dy: movedDy };
   }
 
   /** Type text into the focused element with human cadence. Each character is
@@ -1971,6 +2196,46 @@ export class Page {
   }
 
   /**
+   * Poll until `needle` appears anywhere in the page's rendered text —
+   * including inside shadow roots, which plain innerText/textContent do not
+   * cross. The gap this fills (joe's pain-list #5): `waitFor("document.body
+   * .innerText.includes('X')")` reported false negatives on text that
+   * `evaluate` confirmed WAS present at that exact moment, because
+   * `document.body.innerText` alone misses anything rendered inside an open
+   * shadow root (a growing share of real sites — YouTube Studio, many design
+   * systems). Case-insensitive, whitespace-normalized substring match.
+   *
+   * On timeout, the error reports a snippet of what the page DOES currently
+   * show instead of just failing blind — a wait primitive with false
+   * negatives and no diagnostic is worse than none (joe's exact complaint).
+   */
+  async waitForText(needle: string, opts: { timeout?: number; poll?: number } = {}): Promise<void> {
+    const timeout = opts.timeout ?? 10000;
+    const poll = opts.poll ?? 100;
+    const q = JSON.stringify(needle.toLowerCase().replace(/\s+/g, " ").trim());
+    const expr = `(() => {
+      let s = "";
+      const walk = (root) => {
+        for (const n of root.childNodes) {
+          if (n.nodeType === 3) s += n.textContent;
+          else if (n.nodeType === 1) { if (n.shadowRoot) walk(n.shadowRoot); walk(n); }
+        }
+      };
+      walk(document.body || document.documentElement);
+      return s.toLowerCase().replace(/\\s+/g, " ").includes(${q});
+    })()`;
+    try {
+      await this.waitFor(expr, { timeout, poll });
+    } catch (e: any) {
+      if (!String(e?.message ?? "").includes("waitFor timed out")) throw e;
+      const snippet = await this
+        .evaluate<string>(`(document.body ? document.body.innerText : "").replace(/\\s+/g, " ").trim().slice(0, 300)`)
+        .catch(() => "(couldn't read page text)");
+      throw new Error(`waitForText: ${JSON.stringify(needle)} not found within ${timeout}ms. Page currently shows: ${JSON.stringify(snippet)}`);
+    }
+  }
+
+  /**
    * Wait for a network response whose URL contains `match` (string) or matches
    * it (RegExp), and return its status.
    *
@@ -2206,8 +2471,17 @@ export class Page {
   }
 
   /** Press a single named key on the focused element (Enter, Tab, Escape, arrows,
-   *  Delete, Home/End, PageUp/PageDown...). */
-  async press(key: string) {
+   *  Delete, Home/End, PageUp/PageDown...). `count` repeats it with a human-ish
+   *  gap between each — the difference between one call and a 200-call loop to
+   *  walk Backspace across a long field (joe's pain-list #8). */
+  async press(key: string, count = 1) {
+    for (let i = 0; i < count; i++) {
+      await this.pressOnce(key);
+      if (i < count - 1) await sleep(keyDelay(this.rng, key.length === 1 ? key : " "));
+    }
+  }
+
+  private async pressOnce(key: string) {
     const KEYS: Record<string, { code: string; vk: number; text?: string }> = {
       Enter: { code: "Enter", vk: 13, text: "\r" },
       Tab: { code: "Tab", vk: 9 },
