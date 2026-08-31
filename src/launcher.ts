@@ -161,6 +161,12 @@ async function startXvfb(width: number, height: number): Promise<{ display: stri
     return null;
   }
   let exited = false;
+  // spawn() only throws synchronously for a handful of setup errors; a missing
+  // binary (ENOENT) surfaces async via 'error' instead, which the try/catch
+  // above never sees — without this handler that unhandled rejection prints an
+  // ugly stack trace to stderr on every macOS launch (no Xvfb there at all)
+  // even though the code correctly falls back to headless right after.
+  proc.on("error", () => (exited = true));
   proc.on("exit", () => (exited = true));
   const start = Date.now();
   while (!existsSync(`/tmp/.X${n}-lock`) && !exited && Date.now() - start < 5000) await wait(50);
@@ -296,7 +302,14 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
   // Headful on a server: bring up our own Xvfb display if there isn't a real one.
   const childEnv = { ...process.env };
   let xvfbProc: ChildProcess | null = null;
-  const wantXvfb = opts.xvfb ?? (!opts.headless && !process.env.DISPLAY);
+  // Xvfb is an X11 tool — relevant only on Linux. Checking just `!DISPLAY` used
+  // to also fire on macOS/Windows, where DISPLAY is never set at all (there's
+  // no X11), so every headful launch there tried and failed to start Xvfb
+  // before silently degrading to headless — the opposite of what headless:false
+  // asked for, with no error surfaced to the caller. A real native display
+  // (Windows/macOS) needs no virtual one; only gate on it for Linux.
+  const wantXvfb =
+    opts.xvfb ?? (!opts.headless && process.platform === "linux" && !process.env.DISPLAY);
   if (wantXvfb) {
     const xvfb = await startXvfb(screen.width, screen.height);
     if (xvfb) {
