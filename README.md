@@ -448,15 +448,15 @@ We test before we claim.
 ## Use from an AI agent (MCP)
 
 Veil ships an MCP server (`src/mcp.ts`) — already wired into **persoje**
-(`~/.config/persoje/mcp.json`), exposing 40 tools: `goto`, `reload`, `back`, `forward`,
-`snapshot`, `dom`, `click`, `click_text`, `click_at`, `double_click`, `right_click`, `fill`,
-`fill_text`, `type`, `select`, `press`, `scroll`, `set_viewport`, `set_user_agent`,
-`set_fingerprint`, `block_resources`, `unblock_resources`, `wait_for`, `wait_for_selector`,
-`get_cookies`, `text`, `attribute`, `screenshot`, `eval`, `upload`, `upload_via_picker`,
-`enable_downloads`, `wait_for_download`, `pdf`, `fedcm_enable`, `fedcm_signin`, `drag`,
-`frames`, `use_frame`, `close`. Tool-execution failures come
-back as `isError` results (the model reads and self-corrects) rather than JSON-RPC errors.
-Verified end-to-end through persoje's own MCP client (discover → goto → snapshot). Any MCP host works.
+(`~/.config/persoje/mcp.json`), exposing 50 tools, including the composite/batch
+primitives built for agent-operation velocity (`goto_and_wait`, `click_and_wait`,
+`extract_many`, `fill_form`, `batch` — collapse an 8-call flow to as few as 3, see
+[`docs/AGENT-GUIDE.md`](docs/AGENT-GUIDE.md) for the full usage guide + a runnable
+demo) and `verify_url` (ground-truth check outside the browser session, no
+cookies/login). Tool-execution failures come back as `isError` results (the
+model reads and self-corrects) rather than JSON-RPC errors. Verified
+end-to-end through persoje's own MCP client (discover → goto → snapshot). Any
+MCP host works.
 
 ### Driving a heavy/virtualized SPA (Ancestry, Notion, Figma-style editors)
 
