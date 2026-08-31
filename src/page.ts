@@ -791,6 +791,37 @@ export class Page {
     return result;
   }
 
+  /**
+   * goto() + wait for a condition, in ONE call — collapses the goto/waitFor*
+   * pair that opens almost every agent flow (phase-2 profiling: 2 of 8
+   * round-trips in a representative scrape flow were exactly this pair).
+   * Pass at most one of text/selector/expression; omit `wait` entirely to
+   * just navigate with no wait (equivalent to plain goto() but through the
+   * composite-shaped return). The wait outcome is reported honestly under
+   * `wait` rather than folded into the top-level result — a wait TIMEOUT
+   * here does not throw and does not mean the navigation failed; it means
+   * exactly what it says.
+   */
+  async gotoAndWait(
+    url: string,
+    wait?: { text?: string; selector?: string; expression?: string; timeout?: number },
+    opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {},
+  ): Promise<{
+    url: string; status?: number; ok?: boolean; timedOutWaitingForLoad?: boolean; retried?: boolean;
+    wait?: { ok: boolean; error?: string };
+  }> {
+    const nav = await this.goto(url, opts);
+    if (!wait || (!wait.text && !wait.selector && !wait.expression)) return nav;
+    try {
+      if (wait.text) await this.waitForText(wait.text, { timeout: wait.timeout });
+      else if (wait.selector) await this.waitForSelector(wait.selector, { timeout: wait.timeout });
+      else if (wait.expression) await this.waitFor(wait.expression, { timeout: wait.timeout });
+      return { ...nav, wait: { ok: true } };
+    } catch (e: any) {
+      return { ...nav, wait: { ok: false, error: String(e?.message ?? e) } };
+    }
+  }
+
   private async gotoOnce(
     url: string,
     opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {},
@@ -1314,6 +1345,32 @@ export class Page {
   }
 
   /**
+   * clickText() + wait for the effect, in ONE call — collapses the single
+   * most common "did my action land" pattern (click, then a separate wait
+   * call to confirm) across every posting/scraping flow. Same honesty rule
+   * as gotoAndWait: a wait timeout is reported under `wait`, not thrown —
+   * the click itself either succeeded (threw already if not) or it didn't;
+   * whether the expected EFFECT showed up is a separate, honestly-reported
+   * question.
+   */
+  async clickAndWait(
+    query: string,
+    wait?: { text?: string; selector?: string; expression?: string; timeout?: number },
+    opts: { nth?: number; exact?: boolean; role?: string } = {},
+  ): Promise<{ clicked: DomElement; wait?: { ok: boolean; error?: string } }> {
+    const clicked = await this.clickText(query, opts);
+    if (!wait || (!wait.text && !wait.selector && !wait.expression)) return { clicked };
+    try {
+      if (wait.text) await this.waitForText(wait.text, { timeout: wait.timeout });
+      else if (wait.selector) await this.waitForSelector(wait.selector, { timeout: wait.timeout });
+      else if (wait.expression) await this.waitFor(wait.expression, { timeout: wait.timeout });
+      return { clicked, wait: { ok: true } };
+    } catch (e: any) {
+      return { clicked, wait: { ok: false, error: String(e?.message ?? e) } };
+    }
+  }
+
+  /**
    * Scroll the element matching `query` into view and return it, without
    * clicking or filling — the standalone version of the scroll-into-view
    * locateText already does internally for clickText/fillText/extractText.
@@ -1386,6 +1443,36 @@ export class Page {
       await this.type(value);
     }
     return el;
+  }
+
+  /**
+   * Fill several fields in one call — the multi-field form/composer case
+   * (signup, a post editor with title+body+tags) every posting skill hits as
+   * N separate fillText calls. `fields` maps each field's query (same
+   * matching as fillText) to the value to type. v1 scope, deliberately:
+   * plain text targets only (input/textarea/contenteditable, exactly what
+   * fillText already handles) — a <select>/checkbox/radio needs a different
+   * primitive (see Page.select) and is NOT folded in here; that's real depth
+   * (option matching, multi-select, indeterminate checkboxes) worth its own
+   * pass rather than rushed into this one. Runs fields in the given order
+   * (order can matter — e.g. a field that only appears after an earlier one
+   * is filled) and does NOT stop on a per-field failure: every field is
+   * attempted, and each result is reported honestly (ok+element, or the
+   * error) rather than the whole call failing opaquely on field 2 of 5 with
+   * no way to tell whether fields 1, 3, 4, 5 landed.
+   */
+  async fillForm(
+    fields: Record<string, string>,
+  ): Promise<Record<string, { ok: true; element: DomElement } | { ok: false; error: string }>> {
+    const out: Record<string, { ok: true; element: DomElement } | { ok: false; error: string }> = {};
+    for (const [query, value] of Object.entries(fields)) {
+      try {
+        out[query] = { ok: true, element: await this.fillText(query, value) };
+      } catch (e: any) {
+        out[query] = { ok: false, error: String(e?.message ?? e) };
+      }
+    }
+    return out;
   }
 
   /**
@@ -1493,6 +1580,28 @@ export class Page {
     if (opts.all) return (result as ExtractedText[]) ?? [];
     if (!result) throw new Error(`extractText: no visible element matching ${JSON.stringify(query)}`);
     return result as ExtractedText;
+  }
+
+  /**
+   * Read several named facts off the current page in ONE call — `fields`
+   * maps a name you choose (e.g. "title", "price") to the query extractText
+   * would use to find it. Collapses the "read N facts off the same loaded
+   * page" tail every scrape ends with (N extractText calls -> 1). Every
+   * field is attempted independently and reported honestly: a miss on one
+   * field (ok:false + error) does not stop or hide the others.
+   */
+  async extractMany(
+    fields: Record<string, string>,
+  ): Promise<Record<string, { ok: true; value: ExtractedText } | { ok: false; error: string }>> {
+    const out: Record<string, { ok: true; value: ExtractedText } | { ok: false; error: string }> = {};
+    for (const [name, query] of Object.entries(fields)) {
+      try {
+        out[name] = { ok: true, value: (await this.extractText(query)) as ExtractedText };
+      } catch (e: any) {
+        out[name] = { ok: false, error: String(e?.message ?? e) };
+      }
+    }
+    return out;
   }
 
   /** Move the cursor along a human curve to a target point. `buttons` mirrors
@@ -2216,6 +2325,8 @@ export class Page {
     const expr = `(() => {
       let s = "";
       const walk = (root) => {
+        if (!root) return; // mid-navigation, document.body/documentElement can be
+                            // transiently null — that's "no text yet", not a crash
         for (const n of root.childNodes) {
           if (n.nodeType === 3) s += n.textContent;
           else if (n.nodeType === 1) { if (n.shadowRoot) walk(n.shadowRoot); walk(n); }

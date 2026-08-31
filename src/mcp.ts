@@ -39,6 +39,7 @@ import { PRESETS, Fingerprint } from "./fingerprint.js";
 import type { Page } from "./page.js";
 import { pressCombo, verifyUrl } from "./page.js";
 import { applyAliases, validateArgs } from "./mcp-validate.js";
+import { runBatch } from "./batch.js";
 
 let browser: Browser | null = null;
 let page: Page | null = null;
@@ -207,6 +208,27 @@ const TOOLS = [
     }, required: ["url"] } },
   { name: "veil_use_frame", description: "Point every following veil_snapshot/veil_click/veil_fill/veil_type/veil_eval call at one child iframe (index from veil_frames), instead of the main page. Omit index (or pass null) to switch back to the main page. Existing refs are invalidated on switch — call veil_snapshot again after switching.",
     inputSchema: { type: "object", properties: { index: { type: ["number", "null"] } } } },
+  { name: "veil_goto_and_wait", description: "veil_goto + a wait condition, in ONE call — collapses the goto/wait-for-something pair that opens almost every flow. Pass at most one of wait.text/wait.selector/wait.expression; omit `wait` to just navigate. The wait outcome is reported honestly under `wait` — a wait timeout does NOT mean the navigation failed, it means exactly what it says (check wait.ok).",
+    inputSchema: { type: "object", properties: {
+      url: { type: "string" },
+      wait: { type: "object", properties: { text: { type: "string" }, selector: { type: "string" }, expression: { type: "string" }, timeout: { type: "number" } }, description: "pass exactly one of text/selector/expression" },
+      waitUntil: { type: "string", enum: ["load", "networkidle"] },
+    }, required: ["url"] } },
+  { name: "veil_click_and_wait", description: "veil_click_text + a wait condition, in ONE call — the single most common 'did my action land' pattern (click, then check) collapsed to one round-trip. Pass at most one of wait.text/wait.selector/wait.expression; omit `wait` to just click. A wait timeout is reported under `wait`, not thrown — the click itself already succeeded or already threw.",
+    inputSchema: { type: "object", properties: {
+      query: { type: "string" },
+      wait: { type: "object", properties: { text: { type: "string" }, selector: { type: "string" }, expression: { type: "string" }, timeout: { type: "number" } } },
+      nth: { type: "number" }, exact: { type: "boolean" }, role: { type: "string" },
+    }, required: ["query"] } },
+  { name: "veil_extract_many", description: "Read several named facts off the current page in ONE call instead of N separate veil_extract_text calls. `fields` maps a name you choose to the query veil_extract_text would use (e.g. {title:\"the headline\", price:\"$\"}). Every field is attempted independently — a miss on one field (ok:false + error) doesn't stop or hide the others.",
+    inputSchema: { type: "object", properties: { fields: { type: "object", additionalProperties: { type: "string" }, description: "name -> query" } }, required: ["fields"] } },
+  { name: "veil_fill_form", description: "Fill several text fields in ONE call instead of N separate veil_fill_text calls — the multi-field signup/composer case. `fields` maps each field's query (same matching as veil_fill_text) to the value to type. v1 scope: plain text targets only (input/textarea/contenteditable) — not select/checkbox/radio. Every field is attempted independently; a failure on one doesn't stop or hide the others.",
+    inputSchema: { type: "object", properties: { fields: { type: "object", additionalProperties: { type: "string" }, description: "query -> value" } }, required: ["fields"] } },
+  { name: "veil_batch", description: "Run an ordered sequence of actions in ONE MCP round-trip instead of N — the general-purpose composite primitive. Each step is {action, args}; action is one of: goto, gotoAndWait, clickText, clickAndWait, fillText, fillForm, extractText, extractMany, waitFor, waitForText, waitForSelector, press, type, scroll, scrollToText, clickAt, eval (args match that action's own veil_* tool, e.g. clickText args are {query, nth?, exact?, role?}). Steps are query/text-based and resolve their target at EXECUTION time — no snapshot refs, no inter-step data passing (step N cannot consume step N-1's return value; if you need that, don't use batch for that step). By default stops after the first step that throws (later steps report status:\"skipped\"); pass continueOnError:true to run every step regardless. ALWAYS returns one result per step — ran+result, failed+error, or skipped — even on a mid-batch failure: nothing is ever lost or thrown past this call, so a broken step is diagnosable in one look instead of losing prior progress. A step's own honest signal (e.g. scroll's moved:false, a wait's ok:false) passes through in `result` untouched — the top-level `ok` only means every step RAN without throwing, not that every step's effect landed; check individual step results for that.",
+    inputSchema: { type: "object", properties: {
+      steps: { type: "array", items: { type: "object", properties: { action: { type: "string" }, args: { type: "object" } }, required: ["action"] } },
+      continueOnError: { type: "boolean", description: "keep running every step even after one fails (default false: stop and mark the rest skipped)" },
+    }, required: ["steps"] } },
 ];
 
 async function callTool(name: string, rawArgs: any): Promise<any> {
@@ -408,6 +430,22 @@ async function callTool(name: string, rawArgs: any): Promise<any> {
     case "veil_use_frame":
       p.useFrame(args.index ?? null);
       return text(args.index == null ? "switched to main page" : `switched to frame [${args.index}]`);
+    case "veil_goto_and_wait": {
+      const r = await p.gotoAndWait(args.url, args.wait, { waitUntil: args.waitUntil });
+      return text(JSON.stringify(r, null, 2));
+    }
+    case "veil_click_and_wait": {
+      const r = await p.clickAndWait(args.query, args.wait, { nth: args.nth, exact: args.exact, role: args.role });
+      return text(JSON.stringify(r, null, 2));
+    }
+    case "veil_extract_many":
+      return text(JSON.stringify(await p.extractMany(args.fields), null, 2));
+    case "veil_fill_form":
+      return text(JSON.stringify(await p.fillForm(args.fields), null, 2));
+    case "veil_batch": {
+      const r = await runBatch(p, args.steps, { continueOnError: args.continueOnError });
+      return text(JSON.stringify(r, null, 2));
+    }
     default:
       throw new Error(`unknown tool: ${name}`);
   }
