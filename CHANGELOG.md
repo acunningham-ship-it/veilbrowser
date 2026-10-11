@@ -68,9 +68,10 @@
   `count`. `clickText` / `fillText` retry once after a short pause before reporting not-found.
 
 ### Verified
-308/308 tests against real headless Chrome, typecheck clean, committed `dist/` reproduces from
-`src/`. The macOS/Windows launch-mode fix branches on `process.platform` and has no automated test
-(CI runs on Linux).
+316/316 tests against real headless Chrome, typecheck clean, committed `dist/` reproduces from
+`src/`. The platform decision behind the macOS/Windows launch-mode fix is a pure function
+(`displayPlan`) with a unit test per platform, so it runs in Linux CI; it has not been exercised on
+a real Mac or Windows machine.
 
 ## 1.6.1 — 2026-08-09
 

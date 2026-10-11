@@ -76,6 +76,19 @@ export interface LaunchOptions {
      */
     fingerprint?: Fingerprint;
 }
+/** What a launch should do about its display — decided from facts only (no I/O),
+ *  so the per-platform behaviour is unit-testable without a Mac or Windows box.
+ *   - "xvfb":     start our own virtual display (Linux, headful, no DISPLAY — or forced)
+ *   - "headless": degrade to --headless=new (macOS, headful, no monitor attached)
+ *   - "as-is":    launch exactly as asked (native display, or headless already) */
+export declare function displayPlan(o: {
+    headless?: boolean;
+    xvfb?: boolean;
+    platform: NodeJS.Platform;
+    displayEnv?: string;
+    /** Called only on headful macOS, so the ~0.4s system_profiler probe never runs elsewhere. */
+    macHasDisplay: () => boolean;
+}): "xvfb" | "headless" | "as-is";
 /**
  * The Chrome flags that are not computed per-launch, split around the three that
  * are (`--user-data-dir`, `--window-size`, `--window-position`).

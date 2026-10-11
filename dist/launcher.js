@@ -121,6 +121,29 @@ function hasRealDisplay() {
         return true;
     }
 }
+/** What a launch should do about its display — decided from facts only (no I/O),
+ *  so the per-platform behaviour is unit-testable without a Mac or Windows box.
+ *   - "xvfb":     start our own virtual display (Linux, headful, no DISPLAY — or forced)
+ *   - "headless": degrade to --headless=new (macOS, headful, no monitor attached)
+ *   - "as-is":    launch exactly as asked (native display, or headless already) */
+export function displayPlan(o) {
+    // Xvfb is an X11 tool — relevant only on Linux. Checking just `!DISPLAY` used
+    // to also fire on macOS/Windows, where DISPLAY is never set at all (there's
+    // no X11), so every headful launch there tried and failed to start Xvfb
+    // before silently degrading to headless — the opposite of what headless:false
+    // asked for, with no error surfaced to the caller. A real native display
+    // (Windows/macOS) needs no virtual one; only gate on it for Linux.
+    const wantXvfb = o.xvfb ?? (!o.headless && o.platform === "linux" && !o.displayEnv);
+    if (wantXvfb)
+        return "xvfb";
+    // Same fallback, macOS shape: no Xvfb concept here, but a headful launch
+    // still needs an actual monitor attached. If the screen is unplugged
+    // (or this ever runs unattended), fall back to headless instead of a
+    // launch that hangs or silently can't attach to WindowServer.
+    if (!o.headless && o.platform === "darwin" && !o.macHasDisplay())
+        return "headless";
+    return "as-is";
+}
 /** Resolve "auto" → real GPU if we can reach the render node, else SwiftShader. */
 function resolveGpu(mode) {
     if (mode && mode !== "auto")
@@ -247,14 +270,14 @@ export async function launchChrome(opts = {}) {
     // Headful on a server: bring up our own Xvfb display if there isn't a real one.
     const childEnv = { ...process.env };
     let xvfbProc = null;
-    // Xvfb is an X11 tool — relevant only on Linux. Checking just `!DISPLAY` used
-    // to also fire on macOS/Windows, where DISPLAY is never set at all (there's
-    // no X11), so every headful launch there tried and failed to start Xvfb
-    // before silently degrading to headless — the opposite of what headless:false
-    // asked for, with no error surfaced to the caller. A real native display
-    // (Windows/macOS) needs no virtual one; only gate on it for Linux.
-    const wantXvfb = opts.xvfb ?? (!opts.headless && process.platform === "linux" && !process.env.DISPLAY);
-    if (wantXvfb) {
+    const plan = displayPlan({
+        headless: opts.headless,
+        xvfb: opts.xvfb,
+        platform: process.platform,
+        displayEnv: process.env.DISPLAY,
+        macHasDisplay: hasRealDisplay,
+    });
+    if (plan === "xvfb") {
         const xvfb = await startXvfb(screen.width, screen.height);
         if (xvfb) {
             xvfbProc = xvfb.proc;
@@ -267,11 +290,7 @@ export async function launchChrome(opts = {}) {
             args.unshift("--headless=new");
         }
     }
-    else if (!opts.headless && process.platform === "darwin" && !hasRealDisplay()) {
-        // Same fallback, macOS shape: no Xvfb concept here, but a headful launch
-        // still needs an actual monitor attached. If the screen is unplugged
-        // (or this ever runs unattended), fall back to headless instead of a
-        // launch that hangs or silently can't attach to WindowServer.
+    else if (plan === "headless") {
         args.unshift("--headless=new");
     }
     // detached => Chrome leads its own process group, so killGroup() can take down
