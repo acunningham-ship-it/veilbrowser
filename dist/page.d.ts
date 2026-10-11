@@ -315,7 +315,7 @@ export declare class Page {
     /**
      * The Input domain (mouse/key dispatch) can stall for 120s+ on a
      * backgrounded/occluded target while every other domain (Runtime.evaluate,
-     * DOM, Accessibility) stays instant — measured live (joe's pain-list #3):
+     * DOM, Accessibility) stays instant — measured live:
      * clicks sitting past a 120s tool cap, completing minutes later once
      * something else woke the target. The known fix used to be a manual
      * `curl http://127.0.0.1:9333/json/activate/<targetId>` a caller had to
@@ -509,7 +509,7 @@ export declare class Page {
      * clicking or filling — the standalone version of the scroll-into-view
      * locateText already does internally for clickText/fillText/extractText.
      *
-     * Fills the gap joe's pain-list #7 reported: veil_scroll(dy) dispatches a
+     * Fills a reported gap: veil_scroll(dy) dispatches a
      * raw wheel event at the viewport, which only moves the element actually
      * under the cursor — reporting "scrolled" while a target sitting inside an
      * inner/nested scroll container (a modal body, a chat panel, a sidebar
@@ -527,8 +527,8 @@ export declare class Page {
     /**
      * Focus an editable field matched by its label/placeholder/aria text (scrolled
      * into view first) and set `value`. The snapshot-free analogue of fill(ref,
-     * text) — same native-setter + _valueTracker-reset fast path (2026-08-29,
-     * judge #7702) for <input>/<textarea>, since fillText has no snapshot ref to
+     * text) — same native-setter + _valueTracker-reset fast path (2026-08-29)
+     * for <input>/<textarea>, since fillText has no snapshot ref to
      * drive callOnRef with: it operates on document.activeElement right after
      * the click, and checks the click actually landed on a native field before
      * trusting that. contenteditable has no .value/tracker, so it still falls
@@ -563,7 +563,7 @@ export declare class Page {
     }>>;
     /**
      * Read the content of the element(s) matching `query` by description — the missing verb
-     * next to clickText/fillText (2026-08-30, judge #7733/#7734, P1 of the "veil as a real
+     * next to clickText/fillText (2026-08-30, P1 of the "veil as a real
      * high-level tool" plan). "extract the price" / "extract the status" without a snapshot ref
      * or a CSS selector: rank visible elements by label match (same algorithm as locateText, but
      * a WIDER element set — clickText/fillText only ever need interactive controls, extraction
@@ -872,7 +872,7 @@ export declare class Page {
     /**
      * Poll until `needle` appears anywhere in the page's rendered text —
      * including inside shadow roots, which plain innerText/textContent do not
-     * cross. The gap this fills (joe's pain-list #5): `waitFor("document.body
+     * cross. The gap this fills (a reported pain point): `waitFor("document.body
      * .innerText.includes('X')")` reported false negatives on text that
      * `evaluate` confirmed WAS present at that exact moment, because
      * `document.body.innerText` alone misses anything rendered inside an open
@@ -881,7 +881,7 @@ export declare class Page {
      *
      * On timeout, the error reports a snippet of what the page DOES currently
      * show instead of just failing blind — a wait primitive with false
-     * negatives and no diagnostic is worse than none (joe's exact complaint).
+     * negatives and no diagnostic is worse than none (the reporter's exact complaint).
      */
     waitForText(needle: string, opts?: {
         timeout?: number;
@@ -982,7 +982,7 @@ export declare class Page {
     /** Press a single named key on the focused element (Enter, Tab, Escape, arrows,
      *  Delete, Home/End, PageUp/PageDown...). `count` repeats it with a human-ish
      *  gap between each — the difference between one call and a 200-call loop to
-     *  walk Backspace across a long field (joe's pain-list #8). */
+     *  walk Backspace across a long field (a reported pain point). */
     press(key: string, count?: number): Promise<void>;
     private pressOnce;
     /**
