@@ -1,5 +1,77 @@
 # Changelog
 
+## 1.7.0 — 2026-10-11
+
+### Fixed
+- **Headful launches no longer silently turn headless on macOS and Windows.** The Xvfb decision
+  keyed only on "`DISPLAY` is unset", which is always true off Linux, so every `headless: false`
+  launch on a Mac or Windows box tried to start Xvfb (an X11-only tool), failed, and quietly fell
+  back to headless: `goto` worked, no window ever appeared, and nothing told the caller. Xvfb is
+  now only attempted on Linux; a native display needs no virtual one. A missing Xvfb binary also
+  no longer prints an unhandled-rejection stack trace on every launch.
+- **`browser.close()` no longer loses a persistent profile's latest writes.** It sent Chrome's
+  graceful-quit command and then SIGKILLed the process group immediately, so the kill routinely beat
+  the profile flush — a login completed just before `close()` could be gone on relaunch (and the
+  old process sometimes outlived the call, tripping the profile lock). `close()` now waits up to 3s
+  for Chrome to exit on its own before force-killing.
+- **`fill()` / `fillText()` on React-controlled inputs.** Per-keystroke dispatch was slow (~2,900
+  characters took over two minutes) and could throw on pages that re-render or validate on every
+  key. For `<input>` / `<textarea>` the value is now set once through the native setter with the
+  element's React value tracker reset first, then one `input` + `change`. `contenteditable` still
+  uses real keystrokes.
+- **`veil_press` ignored `modifiers`.** `veil_press(key: "a", modifiers: ["Control"])` typed a
+  literal "a" instead of selecting all. The MCP layer never built the combo string; it does now
+  (`pressCombo()`, unit-tested), and `key` accepts any single character.
+- **`goto()` no longer throws on a routine load-timeout.** On sites with a persistent background
+  connection (chat widgets, analytics beacons, long-poll) `Page.loadEventFired` never fires even
+  though the DOM is interactive. Matched on that specific timeout only: if `document.readyState` is
+  `interactive`/`complete` it returns `{ …, timedOutWaitingForLoad: true }`; if the DOM never
+  landed, or on any other error, it still throws.
+- **Stalled input self-recovers.** Every `Input.*` command now has a short 5s leash; on that timeout
+  veil calls `Page.bringToFront()` once and retries the same command, replacing the manual
+  "activate the tab" workaround for a backgrounded or occluded page.
+- **`waitForText()` sees into shadow DOM** (a wait built on `document.body.innerText` could time out
+  on text that was plainly on screen) and no longer crashes when `document.body` is briefly null
+  right after a navigating click. Its timeout error now includes a snippet of what the page shows.
+- **`scroll()` reports what happened.** It returns `{ moved, dx, dy }`, measured before and after,
+  instead of claiming success when a nested scroll container never moved.
+
+### Added
+- **Ten MCP tools (40 → 50):** `veil_clear`, `veil_extract_text`, `veil_wait_for_text`,
+  `veil_scroll_into_view`, `veil_verify_url`, and the composites `veil_goto_and_wait`,
+  `veil_click_and_wait`, `veil_extract_many`, `veil_fill_form`, `veil_batch`.
+- **`veil_batch` — an ordered, query/text-based action sequence in one MCP round-trip.** A real
+  scrape-and-drill-down that took 8 calls now takes 3. A step failure never throws: every step gets
+  `ok` / `error` / `skipped`, and a step's own honest signal (a `moved: false`, a wait's `ok: false`)
+  passes through untouched rather than being collapsed into a false "batch ok".
+- **`Page.clear(ref)`** — first-class field clearing through real Input-domain key dispatch (not
+  `execCommand`, which silently reverts on React-controlled `contenteditable`). Returns the
+  resulting text length so a caller can assert the field is empty before typing.
+- **`Page.extractText(query, { all })`** — the read verb next to `clickText` / `fillText`: "get the
+  price" without a snapshot ref or a CSS selector. Prefers the leaf element, so a `<p>` wrapping an
+  `<a>` returns the link and its `href`.
+- **`verifyUrl()` / `veil_verify_url`** — a browser-free external fetch that tries real crawler
+  user-agents in turn and checks for expected text; confirms a post is publicly visible from outside
+  the session.
+- **`press(key, count)`** repeats with human-ish gaps (clear a long field in one call).
+- **MCP argument aliases and up-front validation.** Common wrong guesses (`files` → `paths`,
+  `text` / `selector` → `query`) are rewritten, and a missing required parameter now fails fast
+  naming the real parameter instead of surfacing as a downstream symptom.
+- `docs/AGENT-GUIDE.md` (operating guide for the MCP tools, the Page API and the composites) and a
+  recorded demo of the 8-calls-to-3 flow.
+
+### Changed
+- **`goto()` returns the page's real `location.href`** (taken from the Document response already
+  flowing through its existing listener, no extra CDP call) rather than echoing the requested URL,
+  and retries once if it detects a silent no-navigation (`retried: true`).
+- **`scroll()` now returns `{ moved, dx, dy }`** rather than nothing. `press()` takes an optional
+  `count`. `clickText` / `fillText` retry once after a short pause before reporting not-found.
+
+### Verified
+308/308 tests against real headless Chrome, typecheck clean, committed `dist/` reproduces from
+`src/`. The macOS/Windows launch-mode fix branches on `process.platform` and has no automated test
+(CI runs on Linux).
+
 ## 1.6.1 — 2026-08-09
 
 ### Added
