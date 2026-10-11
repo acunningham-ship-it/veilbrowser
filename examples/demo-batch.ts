@@ -2,7 +2,7 @@
  * KILLER DEMO — "an agent drives a real browser like a human, fast."
  *
  * A scrape+drill-down against a real public site (news.ycombinator.com), the
- * exact flow profiled for phase-2 (judge #7768): find the 3rd story's
+ * exact flow profiled for phase-2: find the 3rd story's
  * comments link, open it, read the title + comment count back out.
  *
  * Before composites, that flow was 8 separate MCP round-trips (goto, snapshot,

@@ -2,7 +2,7 @@
  * Pure MCP argument validation/aliasing — split out from mcp.ts (which has
  * side effects at import time: it wires up stdin/SIGINT/SIGTERM as soon as
  * it's imported) so this logic is unit-testable without touching a process's
- * stdio. Fixes joe's pain-list #4: 4 failed calls in one session from an
+ * stdio. Fixes a reported pain point: 4 failed calls in one session from an
  * unknown-but-plausible param name being silently ignored — most costly at
  * veil_wait_for(text:...), where the real `expression` param stayed
  * undefined and the tool ran anyway, burning a full timeout on a condition
