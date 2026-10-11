@@ -344,7 +344,7 @@ export async function launchChrome(opts: LaunchOptions = {}): Promise<LaunchResu
     }
   } else if (!opts.headless && process.platform === "darwin" && !hasRealDisplay()) {
     // Same fallback, macOS shape: no Xvfb concept here, but a headful launch
-    // still needs an actual monitor attached. If Bill's screen is unplugged
+    // still needs an actual monitor attached. If the screen is unplugged
     // (or this ever runs unattended), fall back to headless instead of a
     // launch that hangs or silently can't attach to WindowServer.
     args.unshift("--headless=new");

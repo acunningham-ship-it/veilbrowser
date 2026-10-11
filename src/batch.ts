@@ -1,6 +1,6 @@
 /**
  * veil_batch — run an ordered sequence of actions in ONE MCP round-trip.
- * Phase-2 ("make veil fast/easy for AGENTS to operate", judge #7768/#7771):
+ * Phase-2 ("make veil fast/easy for AGENTS to operate"):
  * profiling a real scrape+drill-down flow measured 8 separate tool calls for
  * one logical task — and the real cost of that isn't Chrome's response time,
  * it's that each call is a separate agent reasoning turn. Batch collapses
