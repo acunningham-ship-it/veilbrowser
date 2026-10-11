@@ -9,6 +9,7 @@
  * We launch with the flags a normal Chrome uses, minus the noise.
  */
 import { spawn, execFileSync } from "node:child_process";
+import { Socket } from "node:net";
 import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -69,36 +70,95 @@ function installReaper() {
         });
     }
 }
-/** Start an Xvfb virtual display; resolves once it's ready, or null if unavailable. */
-async function startXvfb(width, height) {
-    let n = 99;
-    for (; n < 160; n++)
-        if (!existsSync(`/tmp/.X${n}-lock`))
-            break;
-    const display = `:${n}`;
-    let proc;
+/** Does anything accept connections on display `n`'s X socket right now? */
+function xAccepts(n) {
+    return new Promise((resolve) => {
+        // Listeners go on BEFORE connect(): Bun reports a missing socket path (ENOENT) by
+        // emitting 'error' (or throwing) before connect() returns, so attaching afterwards
+        // would leave it unhandled and crash the caller. Node reports it asynchronously.
+        const s = new Socket();
+        const done = (v) => (s.destroy(), resolve(v));
+        s.once("connect", () => done(true));
+        s.once("error", () => done(false));
+        try {
+            s.connect(`/tmp/.X11-unix/X${n}`);
+        }
+        catch {
+            done(false);
+        }
+    });
+}
+/** A display number is taken only if a LIVE server holds its lock or its socket
+ *  accepts connections. A lock whose owner is dead is stale (a SIGKILLed Xvfb always
+ *  leaves one) and does not count: Xvfb reaps it itself when it starts on that number. */
+async function displayFree(n) {
     try {
-        proc = spawn("Xvfb", [display, "-screen", "0", `${width}x${height}x24`, "-nolisten", "tcp"], {
-            stdio: "ignore",
-        });
+        const pid = Number(readFileSync(`/tmp/.X${n}-lock`, "utf8").trim());
+        if (pid > 0) {
+            try {
+                process.kill(pid, 0);
+                return false;
+            }
+            catch (e) {
+                if (e?.code === "EPERM")
+                    return false; // alive, just not ours
+            }
+        }
     }
-    catch {
-        return null;
+    catch { } // no lock, or unreadable
+    return !(await xAccepts(n));
+}
+/** Start an Xvfb virtual display; resolves once its socket ACCEPTS CONNECTIONS, or null
+ *  if Xvfb is unavailable or never comes up within `timeoutMs`.
+ *
+ *  The old version scanned /tmp/.X<n>-lock for a number with no lock file and then
+ *  waited for that lock FILE to appear. Wrong two ways: (1) a SIGKILLed Xvfb leaves its
+ *  lock behind, so every headful launch leaked a display number until the :99-:159
+ *  window was exhausted and every launch collided on :160; (2) a STALE lock satisfied
+ *  "the lock exists" instantly, so Chrome started before the new Xvfb was up and died
+ *  with "Missing X server or $DISPLAY" (~2% of back-to-back headful launches).
+ *  If Xvfb exits straight away (a concurrent launch grabbed the number first), try the
+ *  next one. Exported for tests (`first` lets them stay clear of real display numbers). */
+export async function startXvfb(width, height, opts = {}) {
+    const timeoutMs = opts.timeoutMs ?? 5000;
+    const first = opts.first ?? 99;
+    let collisions = 0;
+    for (let n = first; n < first + 100 && collisions < 8; n++) {
+        if (!(await displayFree(n)))
+            continue;
+        let proc;
+        try {
+            proc = spawn("Xvfb", [`:${n}`, "-screen", "0", `${width}x${height}x24`, "-nolisten", "tcp"], {
+                stdio: "ignore",
+            });
+        }
+        catch {
+            return null;
+        }
+        let exited = false;
+        let missing = false;
+        // spawn() only throws synchronously for a handful of setup errors; a missing
+        // binary (ENOENT) surfaces async via 'error' instead, which the try/catch
+        // above never sees — without this handler that unhandled rejection prints an
+        // ugly stack trace to stderr on every macOS launch (no Xvfb there at all)
+        // even though the code correctly falls back to headless right after.
+        proc.on("error", () => ((missing = true), (exited = true)));
+        proc.on("exit", () => (exited = true));
+        const start = Date.now();
+        while (!exited && Date.now() - start < timeoutMs) {
+            if (await xAccepts(n))
+                return { display: `:${n}`, proc };
+            await wait(20);
+        }
+        if (missing)
+            return null;
+        if (!exited) {
+            killGroup(proc); // never came up: don't leave a half-started server behind
+            return null;
+        }
+        collisions++; // died at once: the number was taken under us, try the next
     }
-    let exited = false;
-    // spawn() only throws synchronously for a handful of setup errors; a missing
-    // binary (ENOENT) surfaces async via 'error' instead, which the try/catch
-    // above never sees — without this handler that unhandled rejection prints an
-    // ugly stack trace to stderr on every macOS launch (no Xvfb there at all)
-    // even though the code correctly falls back to headless right after.
-    proc.on("error", () => (exited = true));
-    proc.on("exit", () => (exited = true));
-    const start = Date.now();
-    while (!existsSync(`/tmp/.X${n}-lock`) && !exited && Date.now() - start < 5000)
-        await wait(50);
-    if (exited)
-        return null;
-    return { display, proc };
+    return null;
 }
 /** macOS-only: is a real display actually attached right now? A headless Mac
  *  mini (monitor unplugged, or a login session with no console attached) can't
