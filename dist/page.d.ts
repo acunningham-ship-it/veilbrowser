@@ -315,7 +315,7 @@ export declare class Page {
     /**
      * The Input domain (mouse/key dispatch) can stall for 120s+ on a
      * backgrounded/occluded target while every other domain (Runtime.evaluate,
-     * DOM, Accessibility) stays instant — measured live (joe's pain-list #3):
+     * DOM, Accessibility) stays instant — measured live:
      * clicks sitting past a 120s tool cap, completing minutes later once
      * something else woke the target. The known fix used to be a manual
      * `curl http://127.0.0.1:9333/json/activate/<targetId>` a caller had to
@@ -343,6 +343,36 @@ export declare class Page {
         ok?: boolean;
         timedOutWaitingForLoad?: boolean;
         retried?: boolean;
+    }>;
+    /**
+     * goto() + wait for a condition, in ONE call — collapses the goto/waitFor*
+     * pair that opens almost every agent flow (phase-2 profiling: 2 of 8
+     * round-trips in a representative scrape flow were exactly this pair).
+     * Pass at most one of text/selector/expression; omit `wait` entirely to
+     * just navigate with no wait (equivalent to plain goto() but through the
+     * composite-shaped return). The wait outcome is reported honestly under
+     * `wait` rather than folded into the top-level result — a wait TIMEOUT
+     * here does not throw and does not mean the navigation failed; it means
+     * exactly what it says.
+     */
+    gotoAndWait(url: string, wait?: {
+        text?: string;
+        selector?: string;
+        expression?: string;
+        timeout?: number;
+    }, opts?: {
+        timeout?: number;
+        waitUntil?: "load" | "networkidle";
+    }): Promise<{
+        url: string;
+        status?: number;
+        ok?: boolean;
+        timedOutWaitingForLoad?: boolean;
+        retried?: boolean;
+        wait?: {
+            ok: boolean;
+            error?: string;
+        };
     }>;
     private gotoOnce;
     /** Reload the current page (Page.reload), waiting per `waitUntil`. */
@@ -450,11 +480,36 @@ export declare class Page {
         role?: string;
     }): Promise<DomElement>;
     /**
+     * clickText() + wait for the effect, in ONE call — collapses the single
+     * most common "did my action land" pattern (click, then a separate wait
+     * call to confirm) across every posting/scraping flow. Same honesty rule
+     * as gotoAndWait: a wait timeout is reported under `wait`, not thrown —
+     * the click itself either succeeded (threw already if not) or it didn't;
+     * whether the expected EFFECT showed up is a separate, honestly-reported
+     * question.
+     */
+    clickAndWait(query: string, wait?: {
+        text?: string;
+        selector?: string;
+        expression?: string;
+        timeout?: number;
+    }, opts?: {
+        nth?: number;
+        exact?: boolean;
+        role?: string;
+    }): Promise<{
+        clicked: DomElement;
+        wait?: {
+            ok: boolean;
+            error?: string;
+        };
+    }>;
+    /**
      * Scroll the element matching `query` into view and return it, without
      * clicking or filling — the standalone version of the scroll-into-view
      * locateText already does internally for clickText/fillText/extractText.
      *
-     * Fills the gap joe's pain-list #7 reported: veil_scroll(dy) dispatches a
+     * Fills a reported gap: veil_scroll(dy) dispatches a
      * raw wheel event at the viewport, which only moves the element actually
      * under the cursor — reporting "scrolled" while a target sitting inside an
      * inner/nested scroll container (a modal body, a chat panel, a sidebar
@@ -472,8 +527,8 @@ export declare class Page {
     /**
      * Focus an editable field matched by its label/placeholder/aria text (scrolled
      * into view first) and set `value`. The snapshot-free analogue of fill(ref,
-     * text) — same native-setter + _valueTracker-reset fast path (2026-08-29,
-     * judge #7702) for <input>/<textarea>, since fillText has no snapshot ref to
+     * text) — same native-setter + _valueTracker-reset fast path (2026-08-29)
+     * for <input>/<textarea>, since fillText has no snapshot ref to
      * drive callOnRef with: it operates on document.activeElement right after
      * the click, and checks the click actually landed on a native field before
      * trusting that. contenteditable has no .value/tracker, so it still falls
@@ -484,8 +539,31 @@ export declare class Page {
         nth?: number;
     }): Promise<DomElement>;
     /**
+     * Fill several fields in one call — the multi-field form/composer case
+     * (signup, a post editor with title+body+tags) every posting skill hits as
+     * N separate fillText calls. `fields` maps each field's query (same
+     * matching as fillText) to the value to type. v1 scope, deliberately:
+     * plain text targets only (input/textarea/contenteditable, exactly what
+     * fillText already handles) — a <select>/checkbox/radio needs a different
+     * primitive (see Page.select) and is NOT folded in here; that's real depth
+     * (option matching, multi-select, indeterminate checkboxes) worth its own
+     * pass rather than rushed into this one. Runs fields in the given order
+     * (order can matter — e.g. a field that only appears after an earlier one
+     * is filled) and does NOT stop on a per-field failure: every field is
+     * attempted, and each result is reported honestly (ok+element, or the
+     * error) rather than the whole call failing opaquely on field 2 of 5 with
+     * no way to tell whether fields 1, 3, 4, 5 landed.
+     */
+    fillForm(fields: Record<string, string>): Promise<Record<string, {
+        ok: true;
+        element: DomElement;
+    } | {
+        ok: false;
+        error: string;
+    }>>;
+    /**
      * Read the content of the element(s) matching `query` by description — the missing verb
-     * next to clickText/fillText (2026-08-30, judge #7733/#7734, P1 of the "veil as a real
+     * next to clickText/fillText (2026-08-30, P1 of the "veil as a real
      * high-level tool" plan). "extract the price" / "extract the status" without a snapshot ref
      * or a CSS selector: rank visible elements by label match (same algorithm as locateText, but
      * a WIDER element set — clickText/fillText only ever need interactive controls, extraction
@@ -512,6 +590,21 @@ export declare class Page {
         role?: string;
         all?: boolean;
     }): Promise<ExtractedText | ExtractedText[]>;
+    /**
+     * Read several named facts off the current page in ONE call — `fields`
+     * maps a name you choose (e.g. "title", "price") to the query extractText
+     * would use to find it. Collapses the "read N facts off the same loaded
+     * page" tail every scrape ends with (N extractText calls -> 1). Every
+     * field is attempted independently and reported honestly: a miss on one
+     * field (ok:false + error) does not stop or hide the others.
+     */
+    extractMany(fields: Record<string, string>): Promise<Record<string, {
+        ok: true;
+        value: ExtractedText;
+    } | {
+        ok: false;
+        error: string;
+    }>>;
     /** Move the cursor along a human curve to a target point. `buttons` mirrors
      *  CDP's bitmask (1 = left button down) — pass 1 while dragging so the move
      *  itself carries mousemove-with-button-held events a drag-and-drop library
@@ -779,7 +872,7 @@ export declare class Page {
     /**
      * Poll until `needle` appears anywhere in the page's rendered text —
      * including inside shadow roots, which plain innerText/textContent do not
-     * cross. The gap this fills (joe's pain-list #5): `waitFor("document.body
+     * cross. The gap this fills (a reported pain point): `waitFor("document.body
      * .innerText.includes('X')")` reported false negatives on text that
      * `evaluate` confirmed WAS present at that exact moment, because
      * `document.body.innerText` alone misses anything rendered inside an open
@@ -788,7 +881,7 @@ export declare class Page {
      *
      * On timeout, the error reports a snippet of what the page DOES currently
      * show instead of just failing blind — a wait primitive with false
-     * negatives and no diagnostic is worse than none (joe's exact complaint).
+     * negatives and no diagnostic is worse than none (the reporter's exact complaint).
      */
     waitForText(needle: string, opts?: {
         timeout?: number;
@@ -889,7 +982,7 @@ export declare class Page {
     /** Press a single named key on the focused element (Enter, Tab, Escape, arrows,
      *  Delete, Home/End, PageUp/PageDown...). `count` repeats it with a human-ish
      *  gap between each — the difference between one call and a 200-call loop to
-     *  walk Backspace across a long field (joe's pain-list #8). */
+     *  walk Backspace across a long field (a reported pain point). */
     press(key: string, count?: number): Promise<void>;
     private pressOnce;
     /**

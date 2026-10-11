@@ -622,7 +622,7 @@ export class Page {
     /**
      * The Input domain (mouse/key dispatch) can stall for 120s+ on a
      * backgrounded/occluded target while every other domain (Runtime.evaluate,
-     * DOM, Accessibility) stays instant — measured live (joe's pain-list #3):
+     * DOM, Accessibility) stays instant — measured live:
      * clicks sitting past a 120s tool cap, completing minutes later once
      * something else woke the target. The known fix used to be a manual
      * `curl http://127.0.0.1:9333/json/activate/<targetId>` a caller had to
@@ -652,7 +652,7 @@ export class Page {
      *  fetch after the load event). Reset ref/session state so a prior useFrame()
      *  can't leak across the nav and a leftover ref can't click wrong coords. */
     async goto(url, opts = {}) {
-        // beforeUrl + one retry closes joe's pain-list #6: goto("...facebook.com
+        // beforeUrl + one retry closes a reported pain point: goto("...facebook.com
         // /reel/<id>") once left the tab sitting on an hours-old page with no
         // signal anything was wrong — the routine #2 timeout swallow (below)
         // made a genuine "didn't navigate at all" indistinguishable from "navigated
@@ -675,6 +675,34 @@ export class Page {
         }
         this.lastKnownUrl = result.url;
         return result;
+    }
+    /**
+     * goto() + wait for a condition, in ONE call — collapses the goto/waitFor*
+     * pair that opens almost every agent flow (phase-2 profiling: 2 of 8
+     * round-trips in a representative scrape flow were exactly this pair).
+     * Pass at most one of text/selector/expression; omit `wait` entirely to
+     * just navigate with no wait (equivalent to plain goto() but through the
+     * composite-shaped return). The wait outcome is reported honestly under
+     * `wait` rather than folded into the top-level result — a wait TIMEOUT
+     * here does not throw and does not mean the navigation failed; it means
+     * exactly what it says.
+     */
+    async gotoAndWait(url, wait, opts = {}) {
+        const nav = await this.goto(url, opts);
+        if (!wait || (!wait.text && !wait.selector && !wait.expression))
+            return nav;
+        try {
+            if (wait.text)
+                await this.waitForText(wait.text, { timeout: wait.timeout });
+            else if (wait.selector)
+                await this.waitForSelector(wait.selector, { timeout: wait.timeout });
+            else if (wait.expression)
+                await this.waitFor(wait.expression, { timeout: wait.timeout });
+            return { ...nav, wait: { ok: true } };
+        }
+        catch (e) {
+            return { ...nav, wait: { ok: false, error: String(e?.message ?? e) } };
+        }
     }
     async gotoOnce(url, opts = {}) {
         this.resetRefs();
@@ -761,7 +789,7 @@ export class Page {
         const status = loaderId ? docStatus.get(loaderId) : undefined;
         // Report the REAL current location, not an echo of the requested url — a
         // caller who trusted `res.url === requestedUrl` had no way to tell a
-        // genuine silent no-navigation apart from success (joe's pain-list #6).
+        // genuine silent no-navigation apart from success (a reported pain point).
         // Read off the Document response's OWN url (captured by the SAME
         // Network.responseReceived listener already armed above for status, not
         // a separate CDP round-trip) — this is the post-redirect URL Chrome
@@ -1159,7 +1187,7 @@ export class Page {
      * completed action.
      */
     async clickText(query, opts = {}) {
-        // P1 resilience (2026-08-30, judge #7733/#7734): one soft retry on a miss before
+        // P1 resilience (2026-08-30): one soft retry on a miss before
         // throwing. The common real-world case isn't "the element doesn't exist" — it's a page
         // mid-hydration/re-render where the target flickers out of the walk for one pass. A hard
         // fail on the FIRST miss made every transient DOM shift look identical to a genuine "not
@@ -1176,11 +1204,37 @@ export class Page {
         return el;
     }
     /**
+     * clickText() + wait for the effect, in ONE call — collapses the single
+     * most common "did my action land" pattern (click, then a separate wait
+     * call to confirm) across every posting/scraping flow. Same honesty rule
+     * as gotoAndWait: a wait timeout is reported under `wait`, not thrown —
+     * the click itself either succeeded (threw already if not) or it didn't;
+     * whether the expected EFFECT showed up is a separate, honestly-reported
+     * question.
+     */
+    async clickAndWait(query, wait, opts = {}) {
+        const clicked = await this.clickText(query, opts);
+        if (!wait || (!wait.text && !wait.selector && !wait.expression))
+            return { clicked };
+        try {
+            if (wait.text)
+                await this.waitForText(wait.text, { timeout: wait.timeout });
+            else if (wait.selector)
+                await this.waitForSelector(wait.selector, { timeout: wait.timeout });
+            else if (wait.expression)
+                await this.waitFor(wait.expression, { timeout: wait.timeout });
+            return { clicked, wait: { ok: true } };
+        }
+        catch (e) {
+            return { clicked, wait: { ok: false, error: String(e?.message ?? e) } };
+        }
+    }
+    /**
      * Scroll the element matching `query` into view and return it, without
      * clicking or filling — the standalone version of the scroll-into-view
      * locateText already does internally for clickText/fillText/extractText.
      *
-     * Fills the gap joe's pain-list #7 reported: veil_scroll(dy) dispatches a
+     * Fills a reported gap: veil_scroll(dy) dispatches a
      * raw wheel event at the viewport, which only moves the element actually
      * under the cursor — reporting "scrolled" while a target sitting inside an
      * inner/nested scroll container (a modal body, a chat panel, a sidebar
@@ -1198,8 +1252,8 @@ export class Page {
     /**
      * Focus an editable field matched by its label/placeholder/aria text (scrolled
      * into view first) and set `value`. The snapshot-free analogue of fill(ref,
-     * text) — same native-setter + _valueTracker-reset fast path (2026-08-29,
-     * judge #7702) for <input>/<textarea>, since fillText has no snapshot ref to
+     * text) — same native-setter + _valueTracker-reset fast path (2026-08-29)
+     * for <input>/<textarea>, since fillText has no snapshot ref to
      * drive callOnRef with: it operates on document.activeElement right after
      * the click, and checks the click actually landed on a native field before
      * trusting that. contenteditable has no .value/tracker, so it still falls
@@ -1249,8 +1303,36 @@ export class Page {
         return el;
     }
     /**
+     * Fill several fields in one call — the multi-field form/composer case
+     * (signup, a post editor with title+body+tags) every posting skill hits as
+     * N separate fillText calls. `fields` maps each field's query (same
+     * matching as fillText) to the value to type. v1 scope, deliberately:
+     * plain text targets only (input/textarea/contenteditable, exactly what
+     * fillText already handles) — a <select>/checkbox/radio needs a different
+     * primitive (see Page.select) and is NOT folded in here; that's real depth
+     * (option matching, multi-select, indeterminate checkboxes) worth its own
+     * pass rather than rushed into this one. Runs fields in the given order
+     * (order can matter — e.g. a field that only appears after an earlier one
+     * is filled) and does NOT stop on a per-field failure: every field is
+     * attempted, and each result is reported honestly (ok+element, or the
+     * error) rather than the whole call failing opaquely on field 2 of 5 with
+     * no way to tell whether fields 1, 3, 4, 5 landed.
+     */
+    async fillForm(fields) {
+        const out = {};
+        for (const [query, value] of Object.entries(fields)) {
+            try {
+                out[query] = { ok: true, element: await this.fillText(query, value) };
+            }
+            catch (e) {
+                out[query] = { ok: false, error: String(e?.message ?? e) };
+            }
+        }
+        return out;
+    }
+    /**
      * Read the content of the element(s) matching `query` by description — the missing verb
-     * next to clickText/fillText (2026-08-30, judge #7733/#7734, P1 of the "veil as a real
+     * next to clickText/fillText (2026-08-30, P1 of the "veil as a real
      * high-level tool" plan). "extract the price" / "extract the status" without a snapshot ref
      * or a CSS selector: rank visible elements by label match (same algorithm as locateText, but
      * a WIDER element set — clickText/fillText only ever need interactive controls, extraction
@@ -1325,8 +1407,7 @@ export class Page {
         }
         return { c, s };
       }).filter((x) => x.s >= 0);
-      // Leaf preference (live-verified 2026-08-30 against example.com, judge #7734 test-drive
-      // prep): a wrapping <p> and the <a> it contains can both match the SAME query with the
+      // Leaf preference (live-verified 2026-08-30 against example.com): a wrapping <p> and the <a> it contains can both match the SAME query with the
       // SAME score and SAME label length — a plain score+length sort has no way to break that
       // tie and can hand back the generic container with href:null instead of the actual link.
       // Drop any candidate that CONTAINS another surviving candidate — the more specific
@@ -1353,6 +1434,26 @@ export class Page {
         if (!result)
             throw new Error(`extractText: no visible element matching ${JSON.stringify(query)}`);
         return result;
+    }
+    /**
+     * Read several named facts off the current page in ONE call — `fields`
+     * maps a name you choose (e.g. "title", "price") to the query extractText
+     * would use to find it. Collapses the "read N facts off the same loaded
+     * page" tail every scrape ends with (N extractText calls -> 1). Every
+     * field is attempted independently and reported honestly: a miss on one
+     * field (ok:false + error) does not stop or hide the others.
+     */
+    async extractMany(fields) {
+        const out = {};
+        for (const [name, query] of Object.entries(fields)) {
+            try {
+                out[name] = { ok: true, value: (await this.extractText(query)) };
+            }
+            catch (e) {
+                out[name] = { ok: false, error: String(e?.message ?? e) };
+            }
+        }
+        return out;
     }
     /** Move the cursor along a human curve to a target point. `buttons` mirrors
      *  CDP's bitmask (1 = left button down) — pass 1 while dragging so the move
@@ -1626,7 +1727,7 @@ export class Page {
         // Measure whatever's actually scrollable under the cursor BEFORE and AFTER
         // — a wheel event at viewport coords only moves the element under the
         // cursor, not necessarily the page. Reporting "scrolled" unconditionally
-        // (the old behavior) was joe's pain-list #7: a nested scroll container
+        // (the old behavior) was a reported pain point: a nested scroll container
         // (modal body, chat panel, sidebar list) never moved and the tool claimed
         // success anyway. Falls back to window scroll if nothing under the point
         // is independently scrollable.
@@ -1698,8 +1799,7 @@ export class Page {
         if (isNativeField) {
             // Fast path for <input>/<textarea>: set the value once via the native
             // property setter instead of dispatching one real keydown/char/keyUp
-            // triple per character. Two problems this fixes at once (2026-08-29,
-            // judge #7702 — Bold.org essay textarea):
+            // triple per character. Two problems this fixes at once (2026-08-29):
             //   1. SPEED: ~2900 chars of per-keystroke dispatch took 120s+. One
             //      native-setter call + one 'input' event is ~instant regardless
             //      of length.
@@ -1982,7 +2082,7 @@ export class Page {
     /**
      * Poll until `needle` appears anywhere in the page's rendered text —
      * including inside shadow roots, which plain innerText/textContent do not
-     * cross. The gap this fills (joe's pain-list #5): `waitFor("document.body
+     * cross. The gap this fills (a reported pain point): `waitFor("document.body
      * .innerText.includes('X')")` reported false negatives on text that
      * `evaluate` confirmed WAS present at that exact moment, because
      * `document.body.innerText` alone misses anything rendered inside an open
@@ -1991,7 +2091,7 @@ export class Page {
      *
      * On timeout, the error reports a snippet of what the page DOES currently
      * show instead of just failing blind — a wait primitive with false
-     * negatives and no diagnostic is worse than none (joe's exact complaint).
+     * negatives and no diagnostic is worse than none (the reporter's exact complaint).
      */
     async waitForText(needle, opts = {}) {
         const timeout = opts.timeout ?? 10000;
@@ -2000,6 +2100,8 @@ export class Page {
         const expr = `(() => {
       let s = "";
       const walk = (root) => {
+        if (!root) return; // mid-navigation, document.body/documentElement can be
+                            // transiently null — that's "no text yet", not a crash
         for (const n of root.childNodes) {
           if (n.nodeType === 3) s += n.textContent;
           else if (n.nodeType === 1) { if (n.shadowRoot) walk(n.shadowRoot); walk(n); }
@@ -2237,7 +2339,7 @@ export class Page {
     /** Press a single named key on the focused element (Enter, Tab, Escape, arrows,
      *  Delete, Home/End, PageUp/PageDown...). `count` repeats it with a human-ish
      *  gap between each — the difference between one call and a 200-call loop to
-     *  walk Backspace across a long field (joe's pain-list #8). */
+     *  walk Backspace across a long field (a reported pain point). */
     async press(key, count = 1) {
         for (let i = 0; i < count; i++) {
             await this.pressOnce(key);

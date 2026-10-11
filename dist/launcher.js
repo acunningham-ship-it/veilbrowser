@@ -8,7 +8,7 @@
  * batch of `--disable-*` flags that change behaviour in fingerprintable ways.
  * We launch with the flags a normal Chrome uses, minus the noise.
  */
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -86,6 +86,12 @@ async function startXvfb(width, height) {
         return null;
     }
     let exited = false;
+    // spawn() only throws synchronously for a handful of setup errors; a missing
+    // binary (ENOENT) surfaces async via 'error' instead, which the try/catch
+    // above never sees — without this handler that unhandled rejection prints an
+    // ugly stack trace to stderr on every macOS launch (no Xvfb there at all)
+    // even though the code correctly falls back to headless right after.
+    proc.on("error", () => (exited = true));
     proc.on("exit", () => (exited = true));
     const start = Date.now();
     while (!existsSync(`/tmp/.X${n}-lock`) && !exited && Date.now() - start < 5000)
@@ -93,6 +99,27 @@ async function startXvfb(width, height) {
     if (exited)
         return null;
     return { display, proc };
+}
+/** macOS-only: is a real display actually attached right now? A headless Mac
+ *  mini (monitor unplugged, or a login session with no console attached) can't
+ *  attach a headful Chrome window to WindowServer — this is macOS's equivalent
+ *  of Linux's "no Xvfb, no DISPLAY" case, checked the same way: cheaply, once,
+ *  at launch time, no sudo. `system_profiler SPDisplaysDataType` lists a
+ *  Resolution line per attached display; zero lines means none. ~0.4s — fine
+ *  as a one-time launch check, not a hot path. */
+function hasRealDisplay() {
+    try {
+        const out = execFileSync("system_profiler", ["SPDisplaysDataType"], {
+            timeout: 3000,
+            encoding: "utf8",
+        });
+        return /Resolution:/.test(out);
+    }
+    catch {
+        // If the check itself fails, don't block the launch on it — headful will
+        // either work or fail on its own; assume a display is present.
+        return true;
+    }
 }
 /** Resolve "auto" → real GPU if we can reach the render node, else SwiftShader. */
 function resolveGpu(mode) {
@@ -220,7 +247,13 @@ export async function launchChrome(opts = {}) {
     // Headful on a server: bring up our own Xvfb display if there isn't a real one.
     const childEnv = { ...process.env };
     let xvfbProc = null;
-    const wantXvfb = opts.xvfb ?? (!opts.headless && !process.env.DISPLAY);
+    // Xvfb is an X11 tool — relevant only on Linux. Checking just `!DISPLAY` used
+    // to also fire on macOS/Windows, where DISPLAY is never set at all (there's
+    // no X11), so every headful launch there tried and failed to start Xvfb
+    // before silently degrading to headless — the opposite of what headless:false
+    // asked for, with no error surfaced to the caller. A real native display
+    // (Windows/macOS) needs no virtual one; only gate on it for Linux.
+    const wantXvfb = opts.xvfb ?? (!opts.headless && process.platform === "linux" && !process.env.DISPLAY);
     if (wantXvfb) {
         const xvfb = await startXvfb(screen.width, screen.height);
         if (xvfb) {
@@ -233,6 +266,13 @@ export async function launchChrome(opts = {}) {
             // heuristic score. Better a working browser than none.
             args.unshift("--headless=new");
         }
+    }
+    else if (!opts.headless && process.platform === "darwin" && !hasRealDisplay()) {
+        // Same fallback, macOS shape: no Xvfb concept here, but a headful launch
+        // still needs an actual monitor attached. If the screen is unplugged
+        // (or this ever runs unattended), fall back to headless instead of a
+        // launch that hangs or silently can't attach to WindowServer.
+        args.unshift("--headless=new");
     }
     // detached => Chrome leads its own process group, so killGroup() can take down
     // the whole renderer/gpu/zygote tree in one shot instead of orphaning it.
