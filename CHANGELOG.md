@@ -20,6 +20,17 @@
   back to headless: `goto` worked, no window ever appeared, and nothing told the caller. Xvfb is
   now only attempted on Linux; a native display needs no virtual one. A missing Xvfb binary also
   no longer prints an unhandled-rejection stack trace on every launch.
+- **Headful launches on Linux no longer leak X display numbers or race Xvfb's startup.** veil
+  picked a display by scanning `/tmp/.X<n>-lock` for a number with no lock file, then treated "the
+  lock file exists" as "Xvfb is up". A killed Xvfb always leaves its lock behind, so every launch
+  used up a number until `:99`–`:159` were exhausted and all launches collided on `:160`; and a
+  stale lock satisfied the readiness check instantly, so Chrome sometimes started before its
+  Xvfb was listening and died with `Missing X server or $DISPLAY` (about 2% of back-to-back
+  launches in one process). A number now counts as taken only if a live process holds its lock or
+  its socket accepts connections (stale locks are reused), the display is ready only when its
+  socket accepts a connection, and if Xvfb dies at once because a concurrent launch took the number
+  the next one is tried. A launch whose Xvfb never comes up now gives up cleanly instead of
+  continuing with a dead display.
 - **`browser.close()` no longer loses a persistent profile's latest writes.** It sent Chrome's
   graceful-quit command and then SIGKILLed the process group immediately, so the kill routinely beat
   the profile flush — a login completed just before `close()` could be gone on relaunch (and the
@@ -79,7 +90,7 @@
   `count`. `clickText` / `fillText` retry once after a short pause before reporting not-found.
 
 ### Verified
-316/316 tests against real headless Chrome, typecheck clean, committed `dist/` reproduces from
+324/324 tests against real headless Chrome, typecheck clean, committed `dist/` reproduces from
 `src/`. The platform decision behind the macOS/Windows launch-mode fix is a pure function
 (`displayPlan`) with a unit test per platform, so it runs in Linux CI; it has not been exercised on
 a real Mac or Windows machine.
