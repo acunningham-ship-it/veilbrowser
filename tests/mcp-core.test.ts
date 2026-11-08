@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { createServer } from "node:net";
 import { PARAM_ALIASES } from "../src/mcp-validate.js";
 import { normalizeArgs, NEW_ALIASES } from "../src/mcp-aliases.js";
+import { deadlineFor, DEFAULT_DEADLINE_MS } from "../src/mcp-deadline.js";
 
 const MCP = join(import.meta.dir, "..", "src", "mcp.ts");
 const scratch = mkdtempSync(join(tmpdir(), "veil-mcp-core-"));
@@ -69,6 +70,15 @@ describe("(1) per-call deadline", () => {
     expect(list.result.tools.length).toBeGreaterThan(40);
     m.kill();
   }, 30_000);
+
+  it("deadlineFor: per-tool map, env override, and timeout+10s extension", () => {
+    expect(deadlineFor("veil_goto", {}, {})).toBe(DEFAULT_DEADLINE_MS);
+    expect(deadlineFor("veil_wait_for", {}, {})).toBe(120_000);
+    expect(deadlineFor("veil_wait_for", {}, { VEIL_TOOL_DEADLINE_MS: "1000" })).toBe(1000);
+    expect(deadlineFor("veil_goto", { timeout: 60_000 }, {})).toBe(70_000);      // caller timeout wins the race
+    expect(deadlineFor("veil_goto", { timeout: 5_000 }, {})).toBe(DEFAULT_DEADLINE_MS); // never shortens
+    expect(deadlineFor("veil_goto", { timeout: "abc" }, {})).toBe(DEFAULT_DEADLINE_MS);
+  });
 
   it("positive control: the stub tool is NOT exposed without the test env", async () => {
     const m = startMcp({});
@@ -125,7 +135,7 @@ async function throwawayChrome(): Promise<{ port: number; proc: ChildProcess; pa
     new Response("<html><body>hello ZBODY page</body></html>", { headers: { "content-type": "text/html", "set-cookie": "zsess=ZMARK123; Path=/" } }) });
   cleanups.push(() => server.stop(true));
   const port = await freePort();
-  const udd = join(scratch, "chrome-profile");
+  const udd = join(scratch, `chrome-profile-${port}`);
   const chrome = process.env.VEIL_CHROME || "/usr/bin/google-chrome";
   const proc = spawn(chrome, [`--remote-debugging-port=${port}`, `--user-data-dir=${udd}`, "--headless=new", "--no-sandbox", "--no-first-run", "--disable-gpu", "about:blank"], { stdio: "ignore" });
   cleanups.push(() => { try { proc.kill("SIGKILL"); } catch {} });
@@ -150,6 +160,8 @@ describe("(4) cookie redaction + aliases/body defaults against an attached throw
     const red = out(await a.call("veil_get_cookies", {}, 30_000));
     expect(red).toContain("zsess");               // positive control: the cookie exists and is listed by name
     expect(red).not.toContain("ZMARK123");
+    // documented limit (README): redaction is veil_get_cookies only; page JS still reads non-HttpOnly cookies
+    expect(out(await a.call("veil_eval", { expression: "document.cookie" }, 20_000))).toContain("ZMARK123");
     // aliases against a live page
     expect(out(await a.call("veil_eval", { script: "6*7" }, 20_000))).toBe("42");
     expect(out(await a.call("veil_eval", { expr: "6*8" }, 20_000))).toBe("48");
@@ -204,4 +216,21 @@ describe("(5) VEIL_ALLOW_ORIGINS on launch", () => {
     await m.call("veil_close", {}, 20_000);
     m.kill();
   }, 120_000);
+});
+
+describe("(6) VEIL_ALLOW_ORIGINS on an ATTACHED Chrome", () => {
+  it("attached + allowlist: unlisted host -> AccessDenied; attached without allowlist: same goto is not denied", async () => {
+    const { port } = await throwawayChrome();
+    const base = { VEIL_CDP_URL: `127.0.0.1:${port}`, VEIL_ATTACH_STRICT: "1" };
+    const a = startMcp({ ...base, VEIL_ALLOW_ORIGINS: "listed.invalid" });
+    const denied = await a.call("veil_goto", { url: "http://unlisted.invalid/" }, 60_000);
+    expect(out(denied).toLowerCase()).toMatch(/access.?denied/);
+    expect(a.stderr()).toContain("attached to Chrome");   // it really attached, not a fallback launch
+    a.kill();
+    // control: the denial comes from the allowlist, not from attach or DNS
+    const b = startMcp(base);
+    const open = await b.call("veil_goto", { url: "http://unlisted.invalid/" }, 60_000);
+    expect(out(open).toLowerCase()).not.toMatch(/access.?denied/);
+    b.kill();
+  }, 150_000);
 });
