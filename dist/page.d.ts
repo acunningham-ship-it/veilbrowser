@@ -344,6 +344,36 @@ export declare class Page {
         timedOutWaitingForLoad?: boolean;
         retried?: boolean;
     }>;
+    /**
+     * goto() + wait for a condition, in ONE call — collapses the goto/waitFor*
+     * pair that opens almost every agent flow (phase-2 profiling: 2 of 8
+     * round-trips in a representative scrape flow were exactly this pair).
+     * Pass at most one of text/selector/expression; omit `wait` entirely to
+     * just navigate with no wait (equivalent to plain goto() but through the
+     * composite-shaped return). The wait outcome is reported honestly under
+     * `wait` rather than folded into the top-level result — a wait TIMEOUT
+     * here does not throw and does not mean the navigation failed; it means
+     * exactly what it says.
+     */
+    gotoAndWait(url: string, wait?: {
+        text?: string;
+        selector?: string;
+        expression?: string;
+        timeout?: number;
+    }, opts?: {
+        timeout?: number;
+        waitUntil?: "load" | "networkidle";
+    }): Promise<{
+        url: string;
+        status?: number;
+        ok?: boolean;
+        timedOutWaitingForLoad?: boolean;
+        retried?: boolean;
+        wait?: {
+            ok: boolean;
+            error?: string;
+        };
+    }>;
     private gotoOnce;
     /** Reload the current page (Page.reload), waiting per `waitUntil`. */
     reload(opts?: {
@@ -450,6 +480,31 @@ export declare class Page {
         role?: string;
     }): Promise<DomElement>;
     /**
+     * clickText() + wait for the effect, in ONE call — collapses the single
+     * most common "did my action land" pattern (click, then a separate wait
+     * call to confirm) across every posting/scraping flow. Same honesty rule
+     * as gotoAndWait: a wait timeout is reported under `wait`, not thrown —
+     * the click itself either succeeded (threw already if not) or it didn't;
+     * whether the expected EFFECT showed up is a separate, honestly-reported
+     * question.
+     */
+    clickAndWait(query: string, wait?: {
+        text?: string;
+        selector?: string;
+        expression?: string;
+        timeout?: number;
+    }, opts?: {
+        nth?: number;
+        exact?: boolean;
+        role?: string;
+    }): Promise<{
+        clicked: DomElement;
+        wait?: {
+            ok: boolean;
+            error?: string;
+        };
+    }>;
+    /**
      * Scroll the element matching `query` into view and return it, without
      * clicking or filling — the standalone version of the scroll-into-view
      * locateText already does internally for clickText/fillText/extractText.
@@ -484,6 +539,29 @@ export declare class Page {
         nth?: number;
     }): Promise<DomElement>;
     /**
+     * Fill several fields in one call — the multi-field form/composer case
+     * (signup, a post editor with title+body+tags) every posting skill hits as
+     * N separate fillText calls. `fields` maps each field's query (same
+     * matching as fillText) to the value to type. v1 scope, deliberately:
+     * plain text targets only (input/textarea/contenteditable, exactly what
+     * fillText already handles) — a <select>/checkbox/radio needs a different
+     * primitive (see Page.select) and is NOT folded in here; that's real depth
+     * (option matching, multi-select, indeterminate checkboxes) worth its own
+     * pass rather than rushed into this one. Runs fields in the given order
+     * (order can matter — e.g. a field that only appears after an earlier one
+     * is filled) and does NOT stop on a per-field failure: every field is
+     * attempted, and each result is reported honestly (ok+element, or the
+     * error) rather than the whole call failing opaquely on field 2 of 5 with
+     * no way to tell whether fields 1, 3, 4, 5 landed.
+     */
+    fillForm(fields: Record<string, string>): Promise<Record<string, {
+        ok: true;
+        element: DomElement;
+    } | {
+        ok: false;
+        error: string;
+    }>>;
+    /**
      * Read the content of the element(s) matching `query` by description — the missing verb
      * next to clickText/fillText (2026-08-30, judge #7733/#7734, P1 of the "veil as a real
      * high-level tool" plan). "extract the price" / "extract the status" without a snapshot ref
@@ -512,6 +590,21 @@ export declare class Page {
         role?: string;
         all?: boolean;
     }): Promise<ExtractedText | ExtractedText[]>;
+    /**
+     * Read several named facts off the current page in ONE call — `fields`
+     * maps a name you choose (e.g. "title", "price") to the query extractText
+     * would use to find it. Collapses the "read N facts off the same loaded
+     * page" tail every scrape ends with (N extractText calls -> 1). Every
+     * field is attempted independently and reported honestly: a miss on one
+     * field (ok:false + error) does not stop or hide the others.
+     */
+    extractMany(fields: Record<string, string>): Promise<Record<string, {
+        ok: true;
+        value: ExtractedText;
+    } | {
+        ok: false;
+        error: string;
+    }>>;
     /** Move the cursor along a human curve to a target point. `buttons` mirrors
      *  CDP's bitmask (1 = left button down) — pass 1 while dragging so the move
      *  itself carries mousemove-with-button-held events a drag-and-drop library
