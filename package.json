@@ -16,6 +16,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
+    "doctor": "bun run tools/veil-doctor.ts",
     "selftest": "bun run examples/selftest.ts",
     "build": "tsc -p tsconfig.json && chmod +x dist/mcp.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
