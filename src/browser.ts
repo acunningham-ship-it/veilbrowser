@@ -121,6 +121,14 @@ export class Browser {
       // identity mid-session would change navigator properties under a live document
       // — inconsistent with what the site already fingerprinted, which is worse than
       // not applying it at all.
+      // The allowlist, however, MUST apply: it is the enforcement for the "attached
+      // profile is part of the agent's security boundary" risk, and attached tabs are
+      // exactly where it matters. restrictOrigins is the same call init() makes for
+      // newPage(); it needs no fingerprint state.
+      // Known limit: only tabs that exist when pages() is called are covered. A tab
+      // opened later (window.open, a human clicking) is not tracked here, so call
+      // pages() again to pick it up.
+      if (this.allowOrigins?.length) await page.restrictOrigins(this.allowOrigins);
       out.push(page);
     }
     return out;
