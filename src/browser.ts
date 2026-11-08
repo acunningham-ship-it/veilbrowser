@@ -128,6 +128,12 @@ export class Browser {
       // Known limit: only tabs that exist when pages() is called are covered. A tab
       // opened later (window.open, a human clicking) is not tracked here, so call
       // pages() again to pick it up.
+      // Page.enable is not identity, it only turns on Page events. Without it an attached
+      // tab never reports loadEventFired or frameNavigated: every goto()/reload() waited
+      // out its whole timeout (measured: 6.3 s vs 0.38 s on a 6 s timeout), and the
+      // private-network guard could not track which origin the tab is on.
+      await this.cdp.send("Page.enable", {}, sessionId);
+      if (this.blockPrivate) await page.blockPrivateNetwork();
       if (this.allowOrigins?.length) await page.restrictOrigins(this.allowOrigins);
       out.push(page);
     }
