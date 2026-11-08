@@ -83,3 +83,60 @@ describe.skipIf(!!process.env.CI)("goto/reload settle", () => {
     await expect(page.goto(url, { timeout: 10_000 })).rejects.toThrow(/ERR_|failed/);
   }, 30_000);
 });
+
+// Settle cap + the guards the first round left untested (adversary caveats on #31).
+describe.skipIf(!!process.env.CI)("goto/reload settle cap", () => {
+  let browser: Browser;
+  let page: Page;
+  let server: ReturnType<typeof Bun.serve>;
+  const held: Array<() => void> = [];
+  const url = (p: string) => `http://127.0.0.1:${server.port}${p}`;
+
+  beforeAll(async () => {
+    server = Bun.serve({
+      port: 0, hostname: "127.0.0.1", idleTimeout: 0,
+      fetch(req) {
+        if (new URL(req.url).pathname === "/hang.js") {
+          return new Response(new ReadableStream({ start(c) { held.push(() => { try { c.close(); } catch {} }); } }),
+            { headers: { "content-type": "text/javascript" } });
+        }
+        return new Response(`<!doctype html><title>stuck</title><h1>hi</h1><script src="/hang.js"></script>`,
+          { headers: { "content-type": "text/html" } });
+      },
+    });
+    browser = await Browser.launch({ headless: true });
+    page = await browser.newPage();
+  }, 60_000);
+  afterAll(async () => { held.forEach((f) => f()); await browser?.close(); server?.stop(true); });
+
+  it("goto on a hung page resolves at the default 8 s cap, not the 30 s timeout", async () => {
+    const t0 = Date.now();
+    await page.goto(url("/stuck"));
+    const ms = Date.now() - t0;
+    expect(ms).toBeLessThan(12_000);
+    expect(ms).toBeGreaterThan(7_000);
+    expect((page as any).lastNavReady).toBe(false);
+  }, 40_000);
+
+  it("settleMs is honoured on goto and reload", async () => {
+    let t0 = Date.now();
+    await page.goto(url("/stuck2"), { settleMs: 1500 });
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    t0 = Date.now();
+    await page.reload({ settleMs: 1500 });
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    expect((page as any).lastNavReady).toBe(false);
+  }, 30_000);
+
+  it("explicit networkidle still throws on a hung page", async () => {
+    await expect(page.goto(url("/stuck3"), { waitUntil: "networkidle", timeout: 3000 })).rejects.toThrow();
+  }, 30_000);
+
+  it("only the identified load timeout is swallowed: other errors and networkidle rethrow", async () => {
+    const decide = (e: unknown, w: "load" | "networkidle") => (page as any).committedAfterLoadTimeout(e, w);
+    expect(await decide(new Error("Timed out waiting for Page.loadEventFired"), "load")).toBe(true); // control: page is committed
+    expect(await decide(new Error("CDP connection closed"), "load")).toBe(false);
+    expect(await decide(new Error("net::ERR_CONNECTION_RESET"), "load")).toBe(false);
+    expect(await decide(new Error("Timed out waiting for Page.loadEventFired"), "networkidle")).toBe(false);
+  }, 30_000);
+});
