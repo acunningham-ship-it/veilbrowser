@@ -472,6 +472,10 @@ export class Page {
   /** Cached location.href as of the last goto() — see goto()'s silent-no-nav
    *  retry check. undefined until the first goto() completes. */
   private lastKnownUrl?: string;
+  /** Did the last goto()/reload() see the page reach its load event? false means
+   *  the navigation committed but load never fired within the timeout (a held-open
+   *  subresource, long-poll, etc.) and we resolved anyway. undefined before any nav. */
+  lastNavReady?: boolean;
 
   constructor(
     private cdp: CDP,
@@ -897,15 +901,15 @@ export class Page {
         // exactly when a REAL navigation failure needs to be noticed. So: only
         // swallow THIS specific, identified timeout, and only after confirming the
         // DOM actually landed; anything else still throws.
-        if (!/Timed out waiting for Page\.loadEventFired/.test(String((err as any)?.message ?? err))) throw err;
-        const ready = await this.evaluate<string>("document.readyState").catch(() => "");
-        if (ready !== "complete" && ready !== "interactive") throw err; // genuinely never loaded — still a real error
+        if (!(await this.committedAfterLoadTimeout(err, opts.waitUntil ?? "load"))) throw err;
         timedOutWaitingForLoad = true;
       }
+      if (!timedOutWaitingForLoad) this.lastNavReady = true;
     } finally {
       offWithin?.();
       offResp();
     }
+    if (timedOutWaitingForLoad) this.lastNavReady = false;
     await sleep(this.rng.range(150, 400)); // settle, like a human reading
     // status stays undefined only when no Document response is observed for this
     // loaderId (e.g. about:blank) — additive, so callers that ignore it are fine.
@@ -929,13 +933,38 @@ export class Page {
     };
   }
 
+  /** Shared by goto() and reload(): after a load-wait failure, decide whether it is
+   *  the routine "load event never fired" case where the navigation nevertheless
+   *  committed (resolve), or a real failure (caller rethrows). Only the identified
+   *  load timeout qualifies — explicit networkidle keeps its throw, and so does any
+   *  other error (net::ERR_*, connection closed). Committed = the document is
+   *  interactive/complete, or the frame sits on a real URL (not about:blank / a
+   *  chrome-error page) even while parsing is still blocked on a hung subresource. */
+  private async committedAfterLoadTimeout(err: unknown, waitUntil: "load" | "networkidle"): Promise<boolean> {
+    if (waitUntil !== "load") return false;
+    if (!/Timed out waiting for Page\.loadEventFired/.test(String((err as any)?.message ?? err))) return false;
+    const st = await this.evaluate<{ r: string; h: string }>(
+      "({ r: document.readyState, h: location.href })", { timeout: 5000 },
+    ).catch(() => undefined);
+    if (!st) return false;
+    if (st.r === "complete" || st.r === "interactive") return true;
+    return !!st.h && !/^(about:blank|chrome-error:)/.test(st.h);
+  }
+
   /** Reload the current page (Page.reload), waiting per `waitUntil`. */
   async reload(opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {}) {
     this.resetRefs();
     this.activeSessionId = this.sessionId;
     const waiter = this.waitForLoad(opts.waitUntil ?? "load", opts.timeout ?? 30000);
     await this.cdp.send("Page.reload", {}, this.sessionId);
-    await waiter;
+    try {
+      await waiter;
+      this.lastNavReady = true;
+    } catch (err) {
+      // Same settle path as goto(): load never fired but the document committed.
+      if (!(await this.committedAfterLoadTimeout(err, opts.waitUntil ?? "load"))) throw err;
+      this.lastNavReady = false;
+    }
     await sleep(this.rng.range(150, 400));
   }
 

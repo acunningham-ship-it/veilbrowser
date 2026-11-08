@@ -118,7 +118,7 @@ describe.skipIf(!!process.env.CI)("goto() load-timeout fallback", () => {
         }
         // A response that never finishes sending — the document itself never
         // finishes downloading, so readyState never even reaches "interactive".
-        // This must still throw: not every load-timeout is benign.
+        // goto-settle: this now resolves with lastNavReady=false (URL committed).
         if (u.pathname === "/never-finishes") {
           const stream = new ReadableStream({
             start(controller) { controller.enqueue(new TextEncoder().encode("<!doctype html><html><body>")); },
@@ -140,13 +140,12 @@ describe.skipIf(!!process.env.CI)("goto() load-timeout fallback", () => {
     expect(await page.evaluate("document.body.innerText")).toBe("ok");
   });
 
-  it("still throws when the document itself never finished loading", async () => {
-    let msg = "";
-    try {
-      await page.goto(`http://127.0.0.1:${server.port}/never-finishes`, { timeout: 1200 });
-    } catch (e: any) {
-      msg = String(e?.message ?? e);
-    }
-    expect(msg).toMatch(/Timed out waiting for Page\.loadEventFired/);
+  it("resolves (lastNavReady=false) when the document committed but never finished loading", async () => {
+    // Contract changed with goto-settle: a committed navigation no longer throws on
+    // a missing load event, even if the main document body is still streaming.
+    // Real failures (net::ERR_*, connection closed) still throw: see goto-settle.test.ts.
+    const res = await page.goto(`http://127.0.0.1:${server.port}/never-finishes`, { timeout: 1200 });
+    expect(res.url).toBe(`http://127.0.0.1:${server.port}/never-finishes`);
+    expect((page as any).lastNavReady).toBe(false);
   });
 }, TIMEOUT);
