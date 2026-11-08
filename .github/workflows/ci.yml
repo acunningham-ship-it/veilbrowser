@@ -18,5 +18,33 @@ jobs:
         run: bun run typecheck
       - name: Unit tests
         run: bun test tests/*.test.ts
-      # Note: detection/E2E examples need a real Chrome + GPU/Xvfb and a clean IP,
-      # so they run locally, not in CI. See examples/detect.ts and hardtargets.ts.
+      # Drift guards: committed generated output must match its source (release.yml only
+      # caught stale dist at tag time).
+      - name: dist is up to date
+        run: bun run build && git diff --exit-code dist
+      - name: Python assets are up to date
+        run: bun tools-gen-python-assets.ts && git diff --exit-code python/
+      # Note: detection examples need a GPU and a clean IP, so they run locally, not here.
+      # See examples/detect.ts and hardtargets.ts.
+
+  # Real-Chrome job. The integration test files are `describe.skipIf(!!process.env.CI)`;
+  # GitHub sets CI=true, so this job overrides it to empty (falsy) to run them, and
+  # tests/mcp-attach-e2e.test.ts (the MCP attach path) runs here too.
+  browser:
+    runs-on: ubuntu-latest
+    env:
+      CI: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
+      - run: bun install
+      - name: Browser tests (xvfb)
+        env:
+          VEIL_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: xvfb-run -a bun test tests/*.test.ts
