@@ -19,6 +19,8 @@ import { findChrome } from "../src/launcher.js";
 const TIMEOUT = 30_000;
 // Skip only when there is no Chrome to launch (judge #18141), not on CI: any job with Chrome runs it.
 const hasChrome = (() => { try { return !!findChrome(); } catch { return false; } })();
+// In the Chrome CI job a missing Chrome is a failure, not a skip (judge #18144, #18216).
+if (!hasChrome && process.env.VEIL_REQUIRE_CHROME) throw new Error("VEIL_REQUIRE_CHROME is set but findChrome() found no Chrome");
 
 describe.skipIf(!hasChrome)("allowOrigins on an attached browser", () => {
   let chrome: ChildProcess;
