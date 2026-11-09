@@ -76,6 +76,37 @@ export interface LaunchOptions {
      */
     fingerprint?: Fingerprint;
 }
+/** Start an Xvfb virtual display; resolves once its socket ACCEPTS CONNECTIONS, or null
+ *  if Xvfb is unavailable or never comes up within `timeoutMs`.
+ *
+ *  The old version scanned /tmp/.X<n>-lock for a number with no lock file and then
+ *  waited for that lock FILE to appear. Wrong two ways: (1) a SIGKILLed Xvfb leaves its
+ *  lock behind, so every headful launch leaked a display number until the :99-:159
+ *  window was exhausted and every launch collided on :160; (2) a STALE lock satisfied
+ *  "the lock exists" instantly, so Chrome started before the new Xvfb was up and died
+ *  with "Missing X server or $DISPLAY" (~2% of back-to-back headful launches).
+ *  If Xvfb exits straight away (a concurrent launch grabbed the number first), try the
+ *  next one. Exported for tests (`first` lets them stay clear of real display numbers). */
+export declare function startXvfb(width: number, height: number, opts?: {
+    timeoutMs?: number;
+    first?: number;
+}): Promise<{
+    display: string;
+    proc: ChildProcess;
+} | null>;
+/** What a launch should do about its display — decided from facts only (no I/O),
+ *  so the per-platform behaviour is unit-testable without a Mac or Windows box.
+ *   - "xvfb":     start our own virtual display (Linux, headful, no DISPLAY — or forced)
+ *   - "headless": degrade to --headless=new (macOS, headful, no monitor attached)
+ *   - "as-is":    launch exactly as asked (native display, or headless already) */
+export declare function displayPlan(o: {
+    headless?: boolean;
+    xvfb?: boolean;
+    platform: NodeJS.Platform;
+    displayEnv?: string;
+    /** Called only on headful macOS, so the ~0.4s system_profiler probe never runs elsewhere. */
+    macHasDisplay: () => boolean;
+}): "xvfb" | "headless" | "as-is";
 /**
  * The Chrome flags that are not computed per-launch, split around the three that
  * are (`--user-data-dir`, `--window-size`, `--window-position`).

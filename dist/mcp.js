@@ -40,7 +40,9 @@ const VERSION = (() => {
 import { Browser } from "./browser.js";
 import { PRESETS, Fingerprint } from "./fingerprint.js";
 import { pressCombo, verifyUrl } from "./page.js";
-import { applyAliases, validateArgs } from "./mcp-validate.js";
+import { validateArgs } from "./mcp-validate.js";
+import { normalizeArgs } from "./mcp-aliases.js";
+import { deadlineFor, withDeadline } from "./mcp-deadline.js";
 import { runBatch } from "./batch.js";
 let browser = null;
 let page = null;
@@ -54,15 +56,28 @@ let page = null;
  * network fault and is actually a profile lock. Attaching is also the only way to use a
  * session a human logged into by hand.
  */
+/** VEIL_ALLOW_ORIGINS="github.com, example.org" -> navigation allowlist (empty = unrestricted). */
+function allowOriginsFromEnv() {
+    const list = (process.env.VEIL_ALLOW_ORIGINS ?? "").split(",").map((o) => o.trim()).filter(Boolean);
+    return list.length ? list : undefined;
+}
 async function connectOrLaunch() {
     const endpoint = process.env.VEIL_CDP_URL;
+    const allowOrigins = allowOriginsFromEnv();
+    if (allowOrigins)
+        process.stderr.write(`[veil-mcp] origin allowlist active: ${allowOrigins.join(", ")}\n`);
     if (endpoint) {
         try {
-            const b = await Browser.connect(endpoint);
+            const b = await Browser.connect(endpoint, { allowOrigins });
             process.stderr.write(`[veil-mcp] attached to Chrome at ${endpoint}\n`);
             return b;
         }
         catch (e) {
+            if (process.env.VEIL_ATTACH_STRICT === "1") {
+                throw new Error(`VEIL_ATTACH_STRICT=1: could not attach to Chrome at ${endpoint} (${String(e).slice(0, 160)}). ` +
+                    `Not launching a second Chrome on the same profile. Start your Chrome with ` +
+                    `--remote-debugging-port=<port> and set VEIL_CDP_URL to it, or unset VEIL_ATTACH_STRICT to allow a fallback launch.`);
+            }
             // Unreachable is not fatal: launch our own instead. Making VEIL_CDP_URL a hard
             // requirement would leave the server dead for every ordinary task on any day
             // nobody happened to start the shared browser.
@@ -73,6 +88,7 @@ async function connectOrLaunch() {
         return await Browser.launch({
             headless: process.env.VEIL_HEADLESS === "1",
             userDataDir: process.env.VEIL_USER_DATA_DIR,
+            allowOrigins,
         });
     }
     catch (e) {
@@ -124,7 +140,7 @@ const TOOLS = [
     { name: "veil_fill_text", description: "Focus an editable field matched by its label/placeholder/aria text, clear it, and type `value` — the snapshot-free analogue of veil_fill for pages with no usable ref. Matches inputs/textareas/contenteditable only. Errors if no field matches.",
         inputSchema: { type: "object", properties: { query: { type: "string" }, value: { type: "string" }, nth: { type: "number", description: "which match, 0-based (default 0)" } }, required: ["query", "value"] } },
     { name: "veil_extract_text", description: "Read the content of the element matching `query` by description — the read counterpart to veil_click_text/veil_fill_text, no snapshot ref or CSS selector needed. Returns { tag, role, label, text, value, href }: `text` is the full rendered text (not the truncated label used for matching), `value` is set for an <input>/<textarea>/<select>, `href` for a link. Pass `all:true` to return every visible match instead of just the best one — the single-page half of 'extract all posts/comments' (no pagination — this reads what's currently rendered). Wider element match than click/fill_text: also matches plain text containers (span/p/li/article/headings), since extraction routinely targets content, not just controls. Errors loudly if nothing matches (unless all:true, which returns an empty array).",
-        inputSchema: { type: "object", properties: { query: { type: "string" }, nth: { type: "number", description: "which match, 0-based (default 0), ignored when all:true" }, exact: { type: "boolean", description: "require exact label match" }, role: { type: "string", description: "restrict to this ARIA role" }, all: { type: "boolean", description: "return every visible match, not just the best one" } }, required: ["query"] } },
+        inputSchema: { type: "object", properties: { query: { type: "string", description: "omit to read the whole page body" }, nth: { type: "number", description: "which match, 0-based (default 0), ignored when all:true" }, exact: { type: "boolean", description: "require exact label match" }, role: { type: "string", description: "restrict to this ARIA role" }, all: { type: "boolean", description: "return every visible match, not just the best one" } } } },
     { name: "veil_click", description: "Click an element by its snapshot ref (human-like mouse path).",
         inputSchema: { type: "object", properties: { ref: { type: "number" } }, required: ["ref"] } },
     { name: "veil_double_click", description: "Double-click an element (by ref) or absolute viewport coords — two real click events, the second carrying clickCount:2, which is what triggers a DOM 'dblclick'. Use this for n8n (double-click a node opens its config panel) and GHL/page builders (double-click an element to edit it in place); a plain veil_click only selects/focuses on these.",
@@ -179,7 +195,7 @@ const TOOLS = [
     { name: "veil_upload_via_picker", description: "Attach files through a control that opens a file picker (SPAs like Gemini that create the <input> lazily on click). Pass the snapshot ref of the trigger element and absolute file paths.",
         inputSchema: { type: "object", properties: { triggerRef: { type: "number" }, paths: { type: "array", items: { type: "string" }, description: "absolute file paths" }, timeout: { type: "number", description: "ms to wait for the file chooser (default 15000)" } }, required: ["triggerRef", "paths"] } },
     { name: "veil_text", description: "Read one element's rendered text (innerText) by snapshot ref — a price, status, or result cell — without dumping the whole page.",
-        inputSchema: { type: "object", properties: { ref: { type: "number" } }, required: ["ref"] } },
+        inputSchema: { type: "object", properties: { ref: { type: "number", description: "omit to read the whole page body" } } } },
     { name: "veil_attribute", description: "Read one attribute of an element by snapshot ref (e.g. href, value, aria-label, a data-* attribute). Returns the raw string, or null if absent.",
         inputSchema: { type: "object", properties: { ref: { type: "number" }, name: { type: "string" } }, required: ["ref", "name"] } },
     { name: "veil_screenshot", description: "Capture a PNG screenshot. Default returns it as an image for vision. Pass `path` to save the PNG to disk and return the saved path instead of the image — use this to capture frames / B-roll as files without dumping the image into context. Pass a snapshot `ref` to shoot just that element's bounding box, `clip` for an explicit {x,y,width,height} page rectangle, or `fullPage:true` for the whole scrollable page.",
@@ -229,7 +245,9 @@ const TOOLS = [
             }, required: ["steps"] } },
 ];
 async function callTool(name, rawArgs) {
-    const args = applyAliases(name, rawArgs);
+    if (name === "veil_test_hang")
+        return new Promise(() => { }); // never settles; see handle()
+    const args = normalizeArgs(name, rawArgs);
     validateArgs(TOOLS, name, args);
     if (name === "veil_close") {
         if (browser)
@@ -246,14 +264,15 @@ async function callTool(name, rawArgs) {
         return text(JSON.stringify(r, null, 2));
     }
     const p = await ensurePage();
+    const NOT_READY = " (load event never fired: the page committed but may be partly loaded; wait for what you need before acting)";
     switch (name) {
         case "veil_goto": {
-            const res = await p.goto(args.url, { waitUntil: args.waitUntil });
-            return text(`navigated to ${res.url}${res.status != null ? ` (HTTP ${res.status})` : ""}${res.retried ? " (retried once — the first attempt didn't move)" : ""}`);
+            const res = await p.goto(args.url, { waitUntil: args.waitUntil, settle: true });
+            return text(`navigated to ${res.url}${res.status != null ? ` (HTTP ${res.status})` : ""}${res.retried ? " (retried once — the first attempt didn't move)" : ""}${p.lastNavReady === false ? NOT_READY : ""}`);
         }
         case "veil_reload":
-            await p.reload({ waitUntil: args.waitUntil });
-            return text(`reloaded ${await p.url()}`);
+            await p.reload({ waitUntil: args.waitUntil, settle: true });
+            return text(`reloaded ${await p.url()}${p.lastNavReady === false ? NOT_READY : ""}`);
         case "veil_back":
             await p.back({ waitUntil: args.waitUntil });
             return text(`back to ${await p.url()}`);
@@ -277,6 +296,9 @@ async function callTool(name, rawArgs) {
             return text(`filled ${JSON.stringify(el.t)} @${el.x},${el.y} with ${args.value.length} chars`);
         }
         case "veil_extract_text": {
+            if (args.query == null) {
+                return text(JSON.stringify({ tag: "body", text: await p.evaluate("document.body ? document.body.innerText : ''") }, null, 2));
+            }
             const result = await p.extractText(args.query, { nth: args.nth, exact: args.exact, role: args.role, all: args.all });
             return text(JSON.stringify(result, null, 2));
         }
@@ -368,7 +390,14 @@ async function callTool(name, rawArgs) {
             await p.clickAt(args.x, args.y);
             return text(`clicked at (${args.x}, ${args.y})`);
         case "veil_get_cookies":
-            return text(JSON.stringify(await p.getCookies(args.urls), null, 2));
+            {
+                const cookies = await p.getCookies(args.urls);
+                // Cookie values are session credentials; keep them out of model context unless the operator opts in.
+                if (process.env.VEIL_ALLOW_COOKIE_VALUES === "1")
+                    return text(JSON.stringify(cookies, null, 2));
+                const redacted = cookies.map((c) => ({ name: c.name, domain: c.domain, expires: c.expires, valueRedacted: true }));
+                return text(JSON.stringify(redacted, null, 2));
+            }
         case "veil_enable_downloads":
             await p.enableDownloads(args.dir);
             return text(`downloads enabled -> ${args.dir}`);
@@ -383,6 +412,8 @@ async function callTool(name, rawArgs) {
             await p.uploadViaPicker(args.triggerRef, args.paths, { timeout: args.timeout });
             return text(`uploaded ${args.paths.length} file(s) via picker`);
         case "veil_text":
+            if (args.ref == null)
+                return text(String(await p.evaluate("document.body ? document.body.innerText : ''")));
             return text(await p.text(args.ref));
         case "veil_attribute": {
             const v = await p.attribute(args.ref, args.name);
@@ -492,7 +523,9 @@ async function handle(msg) {
         if (method === "tools/call") {
             const name = params?.name;
             // Unknown tool is a genuine PROTOCOL error (bad method) -> JSON-RPC error.
-            if (!TOOLS.some((t) => t.name === name)) {
+            // veil_test_hang exists only under VEIL_MCP_TEST_STUB=1 (tests/mcp-core.test.ts); it is not in TOOLS.
+            const isStub = name === "veil_test_hang" && process.env.VEIL_MCP_TEST_STUB === "1";
+            if (!isStub && !TOOLS.some((t) => t.name === name)) {
                 if (id !== undefined)
                     send({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown tool: ${name}` } });
                 return;
@@ -501,7 +534,8 @@ async function handle(msg) {
             // 5", upload path missing, ...) is not a protocol failure — return it as a
             // successful result with isError:true so the agent can read it and retry.
             try {
-                const result = await callTool(name, params.arguments ?? {});
+                const callArgs = params.arguments ?? {};
+                const result = await withDeadline(name, deadlineFor(name, callArgs), callTool(name, callArgs));
                 return send({ jsonrpc: "2.0", id, result });
             }
             catch (e) {
