@@ -159,6 +159,22 @@ export class Browser {
         }
         catch { }
         this.cdp.close();
+        // Browser.close asks Chrome to quit normally — which is what actually
+        // flushes profile state (cookies, local storage) to disk. Sending it and
+        // immediately SIGKILLing right after raced ahead of that flush: a
+        // persistent profile (the whole point of userDataDir) could silently
+        // lose a just-completed login. Give the natural exit a bounded window
+        // before falling back to the hard kill.
+        const proc = this.launch.process;
+        if (proc.exitCode === null && !proc.killed) {
+            await new Promise((resolve) => {
+                const timer = setTimeout(resolve, 3000);
+                proc.once("exit", () => {
+                    clearTimeout(timer);
+                    resolve();
+                });
+            });
+        }
         this.launch.kill();
     }
 }

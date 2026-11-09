@@ -169,6 +169,10 @@ describe.skipIf(!!process.env.CI)("fingerprint capstone", () => {
     expect(g.languages).toBe(p.languages);
     // …except the WebGL vendor/renderer, which the profile intentionally sets.
     expect(g.webglVendor).toBe(WIN.webglVendor);
-    expect(g.webglVendor).not.toBe(p.webglVendor); // p is the host's real GPU
+    expect(g.webglRenderer).toBe(WIN.webglRenderer);
+    // The plain page shows the host's real GPU. Compare RENDERERS, not vendors: a GitHub runner's
+    // ANGLE vendor is "Google Inc. (Intel)", the same string as the profile's, while its renderer
+    // never claims Direct3D on a non-Windows host.
+    expect(g.webglRenderer).not.toBe(p.webglRenderer);
   }, TIMEOUT);
 });
