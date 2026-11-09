@@ -220,6 +220,10 @@ export declare class Page {
     /** Cached location.href as of the last goto() — see goto()'s silent-no-nav
      *  retry check. undefined until the first goto() completes. */
     private lastKnownUrl?;
+    /** Did the last goto()/reload() see the page reach its load event? false means
+     *  the navigation committed but load never fired within the timeout (a held-open
+     *  subresource, long-poll, etc.) and we resolved anyway. undefined before any nav. */
+    lastNavReady?: boolean;
     constructor(cdp: CDP, sessionId: string, targetId?: string | undefined);
     /** Enable the domains we use and arm stealth injection on every document. */
     init(opts?: {
@@ -333,10 +337,18 @@ export declare class Page {
      *  — top-level navigation isn't a per-frame concept. `waitUntil` is "load"
      *  (default) or "networkidle" (no network for ~500ms — better for SPAs that
      *  fetch after the load event). Reset ref/session state so a prior useFrame()
-     *  can't leak across the nav and a leftover ref can't click wrong coords. */
+     *  can't leak across the nav and a leftover ref can't click wrong coords.
+     *
+     *  `settle: true` (opt-in, the MCP uses it): when the load event has not fired
+     *  `settleMs` (default 8000) after the navigation command returned, but the frame
+     *  committed to a real URL, resolve instead of waiting out the timeout, and set
+     *  `lastNavReady = false`. Without it, goto() behaves as before: it waits the full
+     *  timeout and throws unless the document reached interactive/complete. */
     goto(url: string, opts?: {
         timeout?: number;
         waitUntil?: "load" | "networkidle";
+        settle?: boolean;
+        settleMs?: number;
     }): Promise<{
         url: string;
         status?: number;
@@ -375,10 +387,29 @@ export declare class Page {
         };
     }>;
     private gotoOnce;
+    /** Shared by goto() and reload(): after a load-wait failure, decide whether it is
+     *  the routine "load event never fired" case where the navigation nevertheless
+     *  committed (resolve), or a real failure (caller rethrows). Only the identified
+     *  load timeout qualifies — explicit networkidle keeps its throw, and so does any
+     *  other error (net::ERR_*, connection closed). Committed = the document is
+     *  interactive/complete, or the frame sits on a real URL (not about:blank / a
+     *  chrome-error page) even while parsing is still blocked on a hung subresource. */
+    private committedAfterLoadTimeout;
+    /** Committed = the frame sits on a real URL. about:blank and chrome-error:// never
+     *  count, whatever their readyState ("complete" on a blank tab that never navigated). */
+    private committedNow;
+    private readyAndHref;
+    /** Settle cap for waitUntil "load": started once the navigation command returned
+     *  (Chrome answers Page.navigate at commit). A page whose load event is still pending
+     *  `settleMs` later is a hung subresource / long-poll, not a slow page worth 30 s.
+     *  Resolves "settled"; never rejects. Off for networkidle, or when settleMs >= timeout. */
+    private settleTimer;
     /** Reload the current page (Page.reload), waiting per `waitUntil`. */
     reload(opts?: {
         timeout?: number;
         waitUntil?: "load" | "networkidle";
+        settle?: boolean;
+        settleMs?: number;
     }): Promise<void>;
     /** Go back one entry in session history. Throws if there's nothing earlier. */
     back(opts?: {
