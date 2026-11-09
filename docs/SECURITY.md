@@ -38,9 +38,9 @@ The "Env var / API" column is the token the drift test looks for in `src/`.
 | Private-host classifier (which hosts count as LAN/localhost) | enforced | isPrivateHost | private-host.test.ts | The decision function behind `blockPrivateNetwork`. |
 | Private-network block in a live browser (public page cannot reach LAN/localhost) | NOT enforced | - | - | On by default (`blockPrivateNetwork`), but no test drives a public page at a private host, so it is not claimed as enforced. Raw WebSocket to a private host is not interceptable. |
 | Detach-only close on attached browsers | NOT enforced | - | - | Implemented (`close()` detaches an attached browser) but no test covers it, so it is not claimed as enforced. |
-| MCP server applies the origin allowlist (`VEIL_ALLOW_ORIGINS`) | pending | VEIL_ALLOW_ORIGINS | mcp-core.test.ts | Not wired in `src/mcp.ts` on this branch; today the MCP server is NOT covered by the allowlist. |
-| Refuse to attach without an allowlist (`VEIL_ATTACH_STRICT`) | pending | VEIL_ATTACH_STRICT | mcp-core.test.ts | Same dependency. |
-| Cookie values redacted from `veil_get_cookies` (`VEIL_ALLOW_COOKIE_VALUES`) | pending | VEIL_ALLOW_COOKIE_VALUES | mcp-core.test.ts | Today the tool returns values unredacted. |
+| MCP server applies the origin allowlist (`VEIL_ALLOW_ORIGINS`) | enforced | VEIL_ALLOW_ORIGINS | mcp-core.test.ts | Applies to launched tabs and to the tabs that exist when the server attaches (#33). |
+| Refuse to attach without an allowlist (`VEIL_ATTACH_STRICT`) | enforced | VEIL_ATTACH_STRICT | mcp-core.test.ts | (#33) |
+| Cookie values redacted from `veil_get_cookies` (`VEIL_ALLOW_COOKIE_VALUES`) | enforced | VEIL_ALLOW_COOKIE_VALUES | mcp-core.test.ts | Values are withheld unless the env var is set (#33). |
 | Subresource / fetch / image / beacon gating | NOT enforced | - | - | By design: gating subresources breaks real sites. |
 | Popup / new-tab navigation policy | NOT enforced | - | - | The allowlist is applied to the page it was set on; a window opened by that page is not guaranteed to inherit it. |
 | `veil_eval` restriction | NOT enforced | - | - | Arbitrary page JS. |
@@ -49,9 +49,7 @@ The "Env var / API" column is the token the drift test looks for in `src/`.
 
 ## Environment variables
 
-These are the MCP server's attach-safety switches. They are `pending` above: documented here so
-the contract is fixed, but they only take effect once the PRs named in the table merge. Check
-`src/mcp.ts` before relying on them.
+These are the MCP server's attach-safety switches (all `enforced` above since #33).
 
 - `VEIL_ALLOW_ORIGINS` - comma-separated hosts the MCP server may navigate to (subdomains included, dot boundary).
 - `VEIL_ATTACH_STRICT` - when set, attaching via `VEIL_CDP_URL` without `VEIL_ALLOW_ORIGINS` is refused instead of falling back to unrestricted.
