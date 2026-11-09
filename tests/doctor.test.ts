@@ -47,6 +47,17 @@ describe("launch path under a bare PATH", () => {
     expect(line).toMatch(/^\d{4}-\d\d-\d\dT/);
   });
 
+  it("wrapper logs cdp=yes when VEIL_CDP_URL (scheme + path form) has a listener", () => {
+    const srv = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    try {
+      const ylog = join(dir, "veil-mcp-yes.log");
+      launch(["bash", WRAPPER], [`VEIL_MCP_LOG=${ylog}`, `VEIL_CDP_URL=http://127.0.0.1:${srv.port}/json/version`]);
+      const line = readFileSync(ylog, "utf8").split("\n").find((l) => l.includes("startup"))!;
+      expect(line).toMatch(/cdp=yes/);
+      expect(line).toContain(`cdp_url=http://127.0.0.1:${srv.port}/json/version`);
+    } finally { srv.stop(true); }
+  });
+
   function doctor(args: string[], extra: string[] = []) {
     const r = spawnSync("env", [...bareEnv(extra), process.execPath, DOCTOR, ...args], { timeout: 30000, encoding: "utf8" });
     const lines = (r.stdout || "").trim().split("\n").filter(Boolean);

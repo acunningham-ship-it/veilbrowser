@@ -6,12 +6,13 @@
  * Never launches Chrome: only reaches VEIL_CDP_URL with a TCP probe; tools/list needs no browser.
  */
 import { spawn } from "node:child_process";
-import { lstatSync } from "node:fs";
+import { accessSync, constants, lstatSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = resolve(import.meta.dir, "..");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const noWrapper = process.argv.includes("--no-wrapper");
 const t0 = Date.now();
 const PATH = "/usr/bin:/bin";
@@ -40,7 +41,13 @@ function lockHeld(): boolean {
 
 // What bun would the child find? Wrapper adds ~/.bun/bin; legacy launch gets PATH only.
 const home = env.HOME || homedir();
-const bun = Bun.which("bun", { PATH: noWrapper ? PATH : `${home}/.bun/bin:${PATH}` });
+function which(cmd: string, path: string): string | null {
+  for (const d of path.split(":")) {
+    try { accessSync(join(d, cmd), constants.X_OK); return join(d, cmd); } catch {}
+  }
+  return null;
+}
+const bun = which("bun", noWrapper ? PATH : `${home}/.bun/bin:${PATH}`);
 
 async function run(): Promise<{ version: string | null; toolCount: number }> {
   const cmd = noWrapper ? ["bash", "-c", `cd ${ROOT} && bun run src/mcp.ts`] : ["bash", join(ROOT, "bin", "veil-mcp.sh")];
