@@ -20,6 +20,8 @@ import { findChrome } from "../src/launcher.js";
 
 let chromePath: string | null = null;
 try { chromePath = findChrome(); } catch { /* no Chrome here */ }
+// In the Chrome CI job a missing Chrome is a failure, not a skip (judge #18144).
+if (!chromePath && process.env.VEIL_REQUIRE_CHROME) throw new Error("VEIL_REQUIRE_CHROME is set but findChrome() found no Chrome");
 
 const MCP = join(import.meta.dir, "..", "src", "mcp.ts");
 const PAGE = `data:text/html,${encodeURIComponent(
