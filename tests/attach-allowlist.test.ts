@@ -17,8 +17,10 @@ import { Browser } from "../src/index.js";
 import { findChrome } from "../src/launcher.js";
 
 const TIMEOUT = 30_000;
+// Skip only when there is no Chrome to launch (judge #18141), not on CI: any job with Chrome runs it.
+const hasChrome = (() => { try { return !!findChrome(); } catch { return false; } })();
 
-describe.skipIf(!!process.env.CI)("allowOrigins on an attached browser", () => {
+describe.skipIf(!hasChrome)("allowOrigins on an attached browser", () => {
   let chrome: ChildProcess;
   let dir = "";
   let cdpPort = 0;
