@@ -525,6 +525,20 @@ unreachable it falls back to launching — an absent browser downgrades the serv
 kill it. **Read the origin-allowlist warning above before attaching an agent to a profile
 that holds your real sessions:** the agent gets the whole cookie jar.
 
+Server env for attaching safely:
+
+| Variable | Effect |
+| --- | --- |
+| `VEIL_CDP_URL` | Attach to this Chrome (`host:port`) instead of launching one. |
+| `VEIL_ATTACH_STRICT=1` | If the attach fails, return an error naming the fix instead of launching a second Chrome on the same profile. |
+| `VEIL_ALLOW_ORIGINS` | Comma-separated navigation allowlist (`github.com, example.org`). Applies to launched tabs and to the tabs that exist when the server attaches; a tab opened later is not covered. |
+| `VEIL_ALLOW_COOKIE_VALUES=1` | `veil_get_cookies` returns values. By default it lists names, domains and expiry only. |
+| `VEIL_TOOL_DEADLINE_MS` | Per-call deadline (default 45 s, longer for wait/batch tools). A call's own `timeout` arg extends it to `timeout` + 10 s. The deadline abandons a stalled call, it does not cancel it. |
+
+Cookie redaction covers `veil_get_cookies` only. **`veil_eval("document.cookie")` still returns
+every cookie that is not HttpOnly**, and any page script the agent runs can read them. Redaction keeps
+values out of casual tool output; it does not stop an agent that sets out to read them.
+
 Two failure modes this removes, both of which surface as a bare `CDP connection closed` that
 reads like a network fault:
 
