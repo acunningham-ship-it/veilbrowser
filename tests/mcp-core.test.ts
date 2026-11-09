@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, afterAll } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, writeFileSync, chmodSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, chmodSync, existsSync, rmSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -19,8 +19,24 @@ import { deadlineFor, DEFAULT_DEADLINE_MS } from "../src/mcp-deadline.js";
 
 const MCP = join(import.meta.dir, "..", "src", "mcp.ts");
 const scratch = mkdtempSync(join(tmpdir(), "veil-mcp-core-"));
-const cleanups: Array<() => void> = [];
-afterAll(() => { for (const c of cleanups.reverse()) try { c(); } catch {} try { rmSync(scratch, { recursive: true, force: true }); } catch {} });
+const cleanups: Array<() => void | Promise<void>> = [];
+/** PIDs whose argv mentions this run's scratch dir: the Chromes the MCP server launched. veil spawns Chrome
+ *  `detached` (own process group), so SIGKILLing the server alone orphans it. Scoped to our own unique
+ *  mkdtemp path, so it can only ever match processes this file started. */
+function scratchPids(): number[] {
+  const pids: number[] = [];
+  for (const d of readdirSync("/proc")) {
+    if (!/^\d+$/.test(d) || +d === process.pid) continue;
+    try { if (readFileSync(`/proc/${d}/cmdline`, "latin1").includes(scratch)) pids.push(+d); } catch {}
+  }
+  return pids;
+}
+async function teardown() {
+  for (const c of cleanups.splice(0).reverse()) try { await c(); } catch {}
+  for (const pid of scratchPids()) try { process.kill(pid, "SIGKILL"); } catch {}
+  for (let i = 0; i < 20 && scratchPids().length; i++) await Bun.sleep(100);
+}
+afterAll(async () => { await teardown(); try { rmSync(scratch, { recursive: true, force: true }); } catch {} });
 
 /** A spawned MCP server speaking newline-delimited JSON-RPC. */
 function startMcp(env: Record<string, string>) {
@@ -49,7 +65,14 @@ function startMcp(env: Record<string, string>) {
       child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
     });
   const call = (name: string, args: any = {}, timeoutMs?: number) => rpc("tools/call", { name, arguments: args }, timeoutMs);
-  const kill = () => { try { child.kill("SIGKILL"); } catch {} };
+  // SIGTERM first: the server's shutdown handler closes the Chrome it launched; SIGKILL only if it hangs.
+  const kill = async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = new Promise((r) => child.once("exit", r));
+    try { child.kill("SIGTERM"); } catch {}
+    if (await Promise.race([exited.then(() => true), Bun.sleep(5000).then(() => false)])) return;
+    try { child.kill("SIGKILL"); } catch {}
+  };
   cleanups.push(kill);
   return { child, call, rpc, kill, stderr: () => stderr };
 }
@@ -68,7 +91,7 @@ describe("(1) per-call deadline", () => {
     // chain not wedged: a later call answers
     const list = await m.rpc("tools/list", undefined, 5_000);
     expect(list.result.tools.length).toBeGreaterThan(40);
-    m.kill();
+    await m.kill();
   }, 30_000);
 
   it("deadlineFor: per-tool map, env override, and timeout+10s extension", () => {
@@ -84,7 +107,7 @@ describe("(1) per-call deadline", () => {
     const m = startMcp({});
     const r = await m.call("veil_test_hang", {}, 5_000);
     expect(r.error?.code).toBe(-32601);
-    m.kill();
+    await m.kill();
   }, 15_000);
 });
 
@@ -122,7 +145,7 @@ describe("(2) parameter aliases", () => {
     const r = await m.call("veil_eval", { bogus: "1+1" }, 10_000);
     expect(r.result.isError).toBe(true);
     expect(out(r)).toContain('missing required param "expression"');
-    m.kill();
+    await m.kill();
   }, 20_000);
 });
 
@@ -170,12 +193,12 @@ describe("(4) cookie redaction + aliases/body defaults against an attached throw
     expect(out(await a.call("veil_extract_text", {}, 20_000))).toContain("ZBODY");
     const s = await a.call("veil_scroll", { deltaY: 10 }, 20_000);
     expect(s.result.isError).toBeUndefined();
-    a.kill();
+    await a.kill();
 
     const b = startMcp({ ...base, VEIL_ALLOW_COOKIE_VALUES: "1" });
     const raw = out(await b.call("veil_get_cookies", {}, 30_000));
     expect(raw).toContain("ZMARK123");
-    b.kill();
+    await b.kill();
   }, 90_000);
 });
 
@@ -195,13 +218,13 @@ describe("(3) VEIL_ATTACH_STRICT", () => {
     expect(out(r)).toContain("--remote-debugging-port");
     await Bun.sleep(500);
     expect(existsSync(marker)).toBe(false);
-    s.kill();
+    await s.kill();
 
     // positive control: the spy WOULD have been executed if a launch had been attempted
     const n = startMcp(env);
     await n.call("veil_snapshot", {}, 30_000);
     expect(existsSync(marker)).toBe(true);
-    n.kill();
+    await n.kill();
   }, 90_000);
 });
 
@@ -214,7 +237,7 @@ describe("(5) VEIL_ALLOW_ORIGINS on launch", () => {
     expect(out(ok).toLowerCase()).not.toMatch(/access.?denied/);   // blocked-by-DNS or similar, not by the allowlist
     expect(m.stderr()).toContain("listed.invalid");                  // active list is printed
     await m.call("veil_close", {}, 20_000);
-    m.kill();
+    await m.kill();
   }, 120_000);
 });
 
@@ -226,11 +249,24 @@ describe("(6) VEIL_ALLOW_ORIGINS on an ATTACHED Chrome", () => {
     const denied = await a.call("veil_goto", { url: "http://unlisted.invalid/" }, 60_000);
     expect(out(denied).toLowerCase()).toMatch(/access.?denied/);
     expect(a.stderr()).toContain("attached to Chrome");   // it really attached, not a fallback launch
-    a.kill();
+    await a.kill();
     // control: the denial comes from the allowlist, not from attach or DNS
     const b = startMcp(base);
     const open = await b.call("veil_goto", { url: "http://unlisted.invalid/" }, 60_000);
     expect(out(open).toLowerCase()).not.toMatch(/access.?denied/);
-    b.kill();
+    await b.kill();
   }, 150_000);
+});
+
+describe("(7) teardown leaves no Chrome behind", () => {
+  it("killing a server that launched Chrome, WITHOUT veil_close (a failed test's path), leaves 0 Chrome processes", async () => {
+    const udd = join(scratch, "udd-teardown");
+    const m = startMcp({ VEIL_HEADLESS: "1", VEIL_USER_DATA_DIR: udd, VEIL_CHROME: process.env.VEIL_CHROME ?? "/usr/bin/google-chrome" });
+    await m.call("veil_goto", { url: "about:blank" }, 60_000);
+    const live = () => scratchPids().filter((p) => { try { return readFileSync(`/proc/${p}/cmdline`, "latin1").includes(udd); } catch { return false; } });
+    expect(live().length).toBeGreaterThan(0);                 // presence: Chrome really was launched
+    await m.kill();
+    for (let i = 0; i < 30 && live().length; i++) await Bun.sleep(100);
+    expect(live()).toEqual([]);                                // the graceful kill took Chrome down; the reaper did not
+  }, 90_000);
 });
