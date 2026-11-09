@@ -532,8 +532,9 @@ google-chrome --user-data-dir=/path/to/profile --remote-debugging-port=9333 abou
 It takes the tab that is already open rather than adding a blank one, and if that Chrome is
 unreachable it falls back to launching — an absent browser downgrades the server, it does not
 kill it. **Read [docs/SECURITY.md](docs/SECURITY.md) before attaching an agent to a profile
-that holds your real sessions:** the agent gets the whole cookie jar, and the MCP server
-is not covered by the origin allowlist.
+that holds your real sessions:** the agent can drive every logged-in session in that profile, and veil_eval can read any cookie the page can.
+`VEIL_ALLOW_ORIGINS` limits where it can navigate; popups, subresources and veil_eval are not covered
+(docs/SECURITY.md).
 
 Server env for attaching safely:
 
