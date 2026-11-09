@@ -251,11 +251,11 @@ async function callTool(name: string, rawArgs: any): Promise<any> {
   const NOT_READY = " (load event never fired: the page committed but may be partly loaded; wait for what you need before acting)";
   switch (name) {
     case "veil_goto": {
-      const res = await p.goto(args.url, { waitUntil: args.waitUntil });
+      const res = await p.goto(args.url, { waitUntil: args.waitUntil, settle: true });
       return text(`navigated to ${res.url}${res.status != null ? ` (HTTP ${res.status})` : ""}${res.retried ? " (retried once — the first attempt didn't move)" : ""}${p.lastNavReady === false ? NOT_READY : ""}`);
     }
     case "veil_reload":
-      await p.reload({ waitUntil: args.waitUntil });
+      await p.reload({ waitUntil: args.waitUntil, settle: true });
       return text(`reloaded ${await p.url()}${p.lastNavReady === false ? NOT_READY : ""}`);
     case "veil_back":
       await p.back({ waitUntil: args.waitUntil });

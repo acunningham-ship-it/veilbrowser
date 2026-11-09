@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **`goto(url, { settle: true })` / `reload({ settle: true })`: opt-in settle for pages whose load event
+  never fires.** If the navigation committed (real `location.href`, not `about:blank` or `chrome-error://`)
+  but `load` is still pending, the call resolves after `settleMs` (default 8000) with
+  `lastNavReady=false` instead of throwing at `timeout`. Only applies with `waitUntil: "load"`;
+  `networkidle`, connection errors and uncommitted navigations still throw. **Default unchanged:**
+  without `settle`, goto/reload throw "Timed out waiting for Page.loadEventFired" exactly as before.
+  The MCP `veil_goto`/`veil_reload` tools opt in and say "load event never fired" in the tool text.
+
 ## 1.6.1 — 2026-08-09
 
 ### Added
