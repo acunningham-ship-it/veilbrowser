@@ -21,9 +21,10 @@ jobs:
       # Drift guards: committed generated output must match its source (release.yml only
       # caught stale dist at tag time).
       - name: dist is up to date
-        run: bun run build && git diff --exit-code dist
+        # porcelain, not diff: a build that emits a NEW file leaves it untracked, which diff ignores
+        run: bun run build && test -z "$(git status --porcelain dist)" || { git status --porcelain dist; exit 1; }
       - name: Python assets are up to date
-        run: bun tools-gen-python-assets.ts && git diff --exit-code python/
+        run: bun tools-gen-python-assets.ts && test -z "$(git status --porcelain python)" || { git status --porcelain python; exit 1; }
       # Note: detection examples need a GPU and a clean IP, so they run locally, not here.
       # See examples/detect.ts and hardtargets.ts.
 
@@ -43,6 +44,12 @@ jobs:
         id: chrome
         with:
           chrome-version: stable
+      # setup-chrome unpacks chrome-sandbox unprivileged; Chrome then aborts at launch
+      # ("chrome-sandbox is owned by root and has mode 4755"), failing every browser test.
+      - name: Make chrome-sandbox setuid root
+        run: |
+          sb="$(dirname "${{ steps.chrome.outputs.chrome-path }}")/chrome-sandbox"
+          sudo chown root:root "$sb" && sudo chmod 4755 "$sb"
       - run: bun install
       - name: Browser tests (xvfb)
         env:
