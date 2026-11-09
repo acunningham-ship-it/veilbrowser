@@ -409,6 +409,8 @@ const BOX_BATCH = 24;
  *  a caller's own tool-call timeout instead of eating all of it. */
 const INPUT_STALL_MS = 5000;
 
+const NOT_A_NAV = /^(about:blank|chrome-error:)/;
+
 export class Page {
   private rng = new Rng();
   private mouse: Point = { x: 100, y: 100 };
@@ -472,6 +474,10 @@ export class Page {
   /** Cached location.href as of the last goto() — see goto()'s silent-no-nav
    *  retry check. undefined until the first goto() completes. */
   private lastKnownUrl?: string;
+  /** Did the last goto()/reload() see the page reach its load event? false means
+   *  the navigation committed but load never fired within the timeout (a held-open
+   *  subresource, long-poll, etc.) and we resolved anyway. undefined before any nav. */
+  lastNavReady?: boolean;
 
   constructor(
     private cdp: CDP,
@@ -760,10 +766,16 @@ export class Page {
    *  — top-level navigation isn't a per-frame concept. `waitUntil` is "load"
    *  (default) or "networkidle" (no network for ~500ms — better for SPAs that
    *  fetch after the load event). Reset ref/session state so a prior useFrame()
-   *  can't leak across the nav and a leftover ref can't click wrong coords. */
+   *  can't leak across the nav and a leftover ref can't click wrong coords.
+   *
+   *  `settle: true` (opt-in, the MCP uses it): when the load event has not fired
+   *  `settleMs` (default 8000) after the navigation command returned, but the frame
+   *  committed to a real URL, resolve instead of waiting out the timeout, and set
+   *  `lastNavReady = false`. Without it, goto() behaves as before: it waits the full
+   *  timeout and throws unless the document reached interactive/complete. */
   async goto(
     url: string,
-    opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {},
+    opts: { timeout?: number; waitUntil?: "load" | "networkidle"; settle?: boolean; settleMs?: number } = {},
   ): Promise<{ url: string; status?: number; ok?: boolean; timedOutWaitingForLoad?: boolean; retried?: boolean }> {
     // beforeUrl + one retry closes joe's pain-list #6: goto("...facebook.com
     // /reel/<id>") once left the tab sitting on an hours-old page with no
@@ -824,7 +836,7 @@ export class Page {
 
   private async gotoOnce(
     url: string,
-    opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {},
+    opts: { timeout?: number; waitUntil?: "load" | "networkidle"; settle?: boolean; settleMs?: number } = {},
   ): Promise<{ url: string; status?: number; ok?: boolean; timedOutWaitingForLoad?: boolean }> {
     this.resetRefs();
     this.recentResponses = [];
@@ -885,8 +897,14 @@ export class Page {
       // waiter will never settle, so swallow it — otherwise it surfaces as an
       // unhandled rejection long after goto() has already returned successfully.
       try {
-        const how = await Promise.race([waiter.then(() => "loaded" as const), withinDoc]);
-        if (how === "within") waiter.catch(() => {});
+        const how = await Promise.race([
+          waiter.then(() => "loaded" as const), withinDoc, this.settleTimer(opts, timeout),
+        ]);
+        if (how !== "loaded") waiter.catch(() => {});
+        if (how === "settled") {
+          if (await this.committedNow()) timedOutWaitingForLoad = true;
+          else await waiter; // not even committed: keep the full timeout and its throw
+        }
       } catch (err) {
         // Page.loadEventFired never fired within the timeout — measured as routine
         // on Instagram, TikTok, Facebook, YouTube Studio, and plenty of ordinary CMS
@@ -897,15 +915,15 @@ export class Page {
         // exactly when a REAL navigation failure needs to be noticed. So: only
         // swallow THIS specific, identified timeout, and only after confirming the
         // DOM actually landed; anything else still throws.
-        if (!/Timed out waiting for Page\.loadEventFired/.test(String((err as any)?.message ?? err))) throw err;
-        const ready = await this.evaluate<string>("document.readyState").catch(() => "");
-        if (ready !== "complete" && ready !== "interactive") throw err; // genuinely never loaded — still a real error
+        if (!(await this.committedAfterLoadTimeout(err, opts.waitUntil ?? "load", !!opts.settle))) throw err;
         timedOutWaitingForLoad = true;
       }
+      if (!timedOutWaitingForLoad) this.lastNavReady = true;
     } finally {
       offWithin?.();
       offResp();
     }
+    if (timedOutWaitingForLoad) this.lastNavReady = false;
     await sleep(this.rng.range(150, 400)); // settle, like a human reading
     // status stays undefined only when no Document response is observed for this
     // loaderId (e.g. about:blank) — additive, so callers that ignore it are fine.
@@ -929,13 +947,67 @@ export class Page {
     };
   }
 
+  /** Shared by goto() and reload(): after a load-wait failure, decide whether it is
+   *  the routine "load event never fired" case where the navigation nevertheless
+   *  committed (resolve), or a real failure (caller rethrows). Only the identified
+   *  load timeout qualifies — explicit networkidle keeps its throw, and so does any
+   *  other error (net::ERR_*, connection closed). Committed = the document is
+   *  interactive/complete, or the frame sits on a real URL (not about:blank / a
+   *  chrome-error page) even while parsing is still blocked on a hung subresource. */
+  private async committedAfterLoadTimeout(err: unknown, waitUntil: "load" | "networkidle", settle = true): Promise<boolean> {
+    if (!/Timed out waiting for Page\.loadEventFired/.test(String((err as any)?.message ?? err))) return false;
+    if (!settle) {
+      // default (pre-settle) contract: only a document that reached interactive/complete counts,
+      // and never about:blank / an error page (a tab still on them did not navigate)
+      const st = await this.readyAndHref();
+      return !!st && !NOT_A_NAV.test(st.h) && (st.r === "complete" || st.r === "interactive");
+    }
+    if (waitUntil !== "load") return false;
+    return this.committedNow();
+  }
+
+  /** Committed = the frame sits on a real URL. about:blank and chrome-error:// never
+   *  count, whatever their readyState ("complete" on a blank tab that never navigated). */
+  private async committedNow(): Promise<boolean> {
+    const st = await this.readyAndHref();
+    return !!st && !!st.h && !NOT_A_NAV.test(st.h);
+  }
+
+  private readyAndHref() {
+    return this.evaluate<{ r: string; h: string }>("({ r: document.readyState, h: location.href })", { timeout: 5000 })
+      .catch(() => undefined);
+  }
+
+  /** Settle cap for waitUntil "load": started once the navigation command returned
+   *  (Chrome answers Page.navigate at commit). A page whose load event is still pending
+   *  `settleMs` later is a hung subresource / long-poll, not a slow page worth 30 s.
+   *  Resolves "settled"; never rejects. Off for networkidle, or when settleMs >= timeout. */
+  private settleTimer(opts: { waitUntil?: "load" | "networkidle"; settle?: boolean; settleMs?: number }, timeout = 30000): Promise<"settled"> {
+    const settleMs = opts.settleMs ?? 8000;
+    if (!opts.settle || (opts.waitUntil ?? "load") !== "load" || settleMs >= timeout) return new Promise(() => {});
+    return new Promise((res) => { const t = setTimeout(() => res("settled"), settleMs); (t as any).unref?.(); });
+  }
+
   /** Reload the current page (Page.reload), waiting per `waitUntil`. */
-  async reload(opts: { timeout?: number; waitUntil?: "load" | "networkidle" } = {}) {
+  async reload(opts: { timeout?: number; waitUntil?: "load" | "networkidle"; settle?: boolean; settleMs?: number } = {}) {
     this.resetRefs();
     this.activeSessionId = this.sessionId;
-    const waiter = this.waitForLoad(opts.waitUntil ?? "load", opts.timeout ?? 30000);
+    const timeout = opts.timeout ?? 30000;
+    const waiter = this.waitForLoad(opts.waitUntil ?? "load", timeout);
     await this.cdp.send("Page.reload", {}, this.sessionId);
-    await waiter;
+    if (!opts.settle) { await waiter; this.lastNavReady = true; await sleep(this.rng.range(150, 400)); return; } // default: as before, throws on timeout
+    try {
+      const how = await Promise.race([waiter.then(() => "loaded" as const), this.settleTimer(opts, timeout)]);
+      if (how === "settled") {
+        waiter.catch(() => {});
+        if (await this.committedNow()) this.lastNavReady = false;
+        else { await waiter; this.lastNavReady = true; } // not even committed: full timeout and its throw
+      } else this.lastNavReady = true;
+    } catch (err) {
+      // Same settle path as goto(): load never fired but the document committed.
+      if (!(await this.committedAfterLoadTimeout(err, opts.waitUntil ?? "load", true))) throw err;
+      this.lastNavReady = false;
+    }
     await sleep(this.rng.range(150, 400));
   }
 
