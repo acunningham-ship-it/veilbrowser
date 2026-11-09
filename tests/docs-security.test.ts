@@ -109,5 +109,7 @@ describe("docs/SECURITY.md", () => {
     expect(row("enforced", "blockPrivateNetwork", "private-host.test.ts")).not.toEqual([]); // named only in a comment
     expect(row("pending", "allowOrigins", "origin-allowlist.test.ts")).not.toEqual([]); // landed, not flipped
     expect(row("pending", "NO_SUCH_TOKEN_XYZ", "origin-allowlist.test.ts")).toEqual([]);
+    // whole word in the test file, only a PREFIX in src: src must match by word too, not substring
+    expect(checkRows(hdr + "| x | enforced | allowOrigins | origin-allowlist.test.ts | |\n", ROOT, "const allowOriginsXyz = 1;")).not.toEqual([]);
   });
 });
