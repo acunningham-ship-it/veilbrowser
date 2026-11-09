@@ -155,6 +155,15 @@ established profile passes where a fresh one hits a wall.
 > properties under a document the site has already fingerprinted is more detectable than
 > leaving them alone.
 
+### Attach safety
+
+Attaching puts the whole profile inside the agent's trust boundary, and the origin allowlist
+is narrower than it sounds: it gates **document navigation** by the library (`allowOrigins`)
+and nothing else (not `fetch`, images, popups, `eval`, uploads, downloads or cookie reads).
+The MCP server does not apply the allowlist on this version. See
+[docs/SECURITY.md](docs/SECURITY.md) for the threat model, a per-control table with the test
+behind each `enforced` row, and the attach-safety env vars.
+
 ## Python
 
 There is a Python front end in [`python/`](python/) with the same core API:
@@ -522,8 +531,9 @@ google-chrome --user-data-dir=/path/to/profile --remote-debugging-port=9333 abou
 
 It takes the tab that is already open rather than adding a blank one, and if that Chrome is
 unreachable it falls back to launching — an absent browser downgrades the server, it does not
-kill it. **Read the origin-allowlist warning above before attaching an agent to a profile
-that holds your real sessions:** the agent gets the whole cookie jar.
+kill it. **Read [docs/SECURITY.md](docs/SECURITY.md) before attaching an agent to a profile
+that holds your real sessions:** the agent gets the whole cookie jar, and the MCP server
+is not covered by the origin allowlist.
 
 Server env for attaching safely:
 
