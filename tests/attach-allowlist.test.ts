@@ -100,13 +100,19 @@ describe.skipIf(!!process.env.CI)("allowOrigins on an attached browser", () => {
       await page.goto(`http://public.test:${pub.port}/?1`, { timeout: 5000 });
       await Bun.sleep(800);
       expect(hitsBlocked).toBe(before);
+      // what the fleet relies on (30-day transcripts: every private-host call is a top-level goto):
+      // with the guard ON, the agent's own navigation to a loopback page still loads that page's
+      // loopback resources. Only a PUBLIC page reaching a private host is blocked.
+      await page.goto(`http://127.0.0.1:${pub.port}/?3`, { timeout: 5000 });
+      for (let i = 0; i < 20 && hitsBlocked === before; i++) await Bun.sleep(100);
+      expect(hitsBlocked).toBe(before + 1);
       // control: the same page in a tab with the guard off DOES reach the host
       await browser.close();
       browser = await Browser.connect(`http://127.0.0.1:${cdpPort}`, { blockPrivateNetwork: false });
       const [open] = await browser.pages();
       await open.goto(`http://public.test:${pub.port}/?2`, { timeout: 5000 });
       await Bun.sleep(800);
-      expect(hitsBlocked).toBeGreaterThan(before);
+      expect(hitsBlocked).toBeGreaterThan(before + 1);
     } finally { pub.stop(true); }
   }, TIMEOUT);
 });
