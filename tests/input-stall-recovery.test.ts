@@ -32,6 +32,9 @@ function fakeCdp(failFirstNCallsToMethod: Record<string, number>) {
       }
       return Promise.resolve({});
     },
+    on() {
+      return () => {}; // Page's constructor subscribes to its own detach event
+    },
   } as unknown as CDP;
   return { cdp, calls };
 }
@@ -94,6 +97,9 @@ describe("Page input-stall recovery (sendInput)", () => {
       send(method: string, params: any, sessionId?: string, timeoutMs?: number): Promise<any> {
         calls.push({ method, params, sessionId, timeoutMs });
         return Promise.reject(new Error("Invalid parameters (-32602)"));
+      },
+      on() {
+        return () => {};
       },
     } as unknown as CDP;
     const page = newPage(cdp);

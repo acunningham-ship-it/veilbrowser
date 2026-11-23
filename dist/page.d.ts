@@ -225,6 +225,9 @@ export declare class Page {
      *  subresource, long-poll, etc.) and we resolved anyway. undefined before any nav. */
     lastNavReady?: boolean;
     constructor(cdp: CDP, sessionId: string, targetId?: string | undefined);
+    private detached;
+    /** True once this tab's target is gone. Local flag, no round trip. */
+    get targetGone(): boolean;
     /** Enable the domains we use and arm stealth injection on every document. */
     init(opts?: {
         maskWebgl?: boolean;
