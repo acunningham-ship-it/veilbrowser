@@ -485,6 +485,17 @@ export class Page {
     private targetId?: string,
   ) {
     this.activeSessionId = sessionId;
+    // Our tab closed (a human, another client, /json/close): Chrome detaches this session and
+    // every later command on it fails -32001. Remember that so a long-lived caller can rebuild.
+    const off = cdp.on("Target.detachedFromTarget", (p: any) => {
+      if (p.sessionId === sessionId) { this.detached = true; off(); }
+    });
+  }
+
+  private detached = false;
+  /** True once this tab's target is gone. Local flag, no round trip. */
+  get targetGone(): boolean {
+    return this.detached;
   }
 
   /** Enable the domains we use and arm stealth injection on every document. */

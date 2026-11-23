@@ -112,6 +112,9 @@ async function ensurePage(): Promise<Page> {
     browser = null;
     page = null; // that page belongs to a target that no longer exists
   }
+  // Our tab was closed but the browser lives: open a fresh tab, never grab another open
+  // one (on a shared browser that tab is another client's).
+  if (page?.targetGone) page = null;
   if (!browser) {
     browser = await connectOrLaunch();
     if (process.env.VEIL_CDP_URL) {
